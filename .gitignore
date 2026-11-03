@@ -6,3 +6,5 @@ nv_voices.json
 link_settings.json
 autoinstall.flag
 dist/
+
+voices/

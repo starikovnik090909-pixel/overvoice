@@ -10,6 +10,12 @@ function main(ctx) {
   app.get('/api/nv/drives', async (req, res) => res.json({ success: true, drives: await nv.drives() }));
   app.get('/api/nv/cable', async (req, res) => res.json(Object.assign({ success: true }, await nv.cableState())));
   app.post('/api/nv/cable/install', (req, res) => { nv.cableInstall(); setTimeout(() => res.json({ success: true }), 200); });
+  app.get('/api/nv/library', async (req, res) => { try { res.json(Object.assign({ success: true }, await nv.libraryState())); } catch (e) { res.json({ success: false, voices: [], error: e.message }); } });
+  app.put('/api/nv/library/:name/:file', (req, res) => {
+    let name, file; try { name = decodeURIComponent(req.params.name); file = decodeURIComponent(req.params.file); } catch (e) { return res.status(400).json({ success: false, error: 'Неверное имя' }); }
+    nv.libraryPut(name, file, req).then((r) => res.json({ success: true, size: r.size })).catch((e) => res.status(400).json({ success: false, error: e.message }));
+  });
+  app.post('/api/nv/library/sync', async (req, res) => { try { res.json(Object.assign({ success: true }, await nv.syncLibrary())); } catch (e) { res.status(500).json({ success: false, error: e.message }); } });
   app.get('/api/nv/voices', async (req, res) => { try { res.json({ success: true, voices: await nv.voices() }); } catch (e) { res.json({ success: false, voices: [], error: e.message }); } });
   // для Overdeck и других программ: включить голос слота (запускает обработку звука) и остановить её
   app.post('/api/nv/voice', async (req, res) => { try { const slot = Number((req.body || {}).slot); if (!Number.isInteger(slot) || slot < 0 || slot > 99) throw new Error('Неверный номер голоса'); await nv.useVoice(slot); ok(res); } catch (e) { res.status(400).json({ success: false, error: e.message }); } });

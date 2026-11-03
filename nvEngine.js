@@ -160,7 +160,7 @@ async function alive() { try { await info(); return true; } catch (e) { return f
 
 async function start() {
   if (child) return state();
-  if (await alive()) { setSt('running', 'Движок уже запущен'); return state(); }
+  if (await alive()) { setSt('running', 'Движок уже запущен'); syncLibrary().catch(() => {}); return state(); }
   const exe = findExe(); if (!exe) { setSt('error', 'Движок не установлен'); return state(); }
   log = []; setSt('starting', 'Запускаю движок (в первый раз до нескольких минут)…');
   child = spawn(exe, launchArgs(exe), { cwd: path.dirname(exe), windowsHide: true });
@@ -169,7 +169,7 @@ async function start() {
   child.stdout.on('data', keep); child.stderr.on('data', keep);
   child.on('exit', (code) => { child = null; if (st.state === 'running' || st.state === 'starting') setSt('ready', code ? 'Движок остановился (код ' + code + ')' : 'Движок остановлен'); });
   child.on('error', (e) => { child = null; setSt('error', 'Не удалось запустить: ' + e.message); });
-  for (let i = 0; i < 240 && child; i++) { if (await alive()) { setSt('running', 'Движок работает'); return state(); } await new Promise((r) => setTimeout(r, 1000)); }
+  for (let i = 0; i < 240 && child; i++) { if (await alive()) { setSt('running', 'Движок работает'); syncLibrary().catch(() => {}); return state(); } await new Promise((r) => setTimeout(r, 1000)); }
   if (child) { stop(); setSt('error', 'Движок не запустился за 4 минуты. Проверь журнал ниже.'); }
   return state();
 }
@@ -180,12 +180,90 @@ function stop() {
   return state();
 }
 
+// ---------- библиотека голосов: файлы лежат в папке voices рядом с движком и подключаются к нему сами ----------
+const voicesDir = () => path.join(baseDir(), 'voices');
+const SAFE = /^[^\\/:*?"<>|\x00-\x1f]{1,80}$/;
+const okName = (n) => typeof n === 'string' && SAFE.test(n) && n !== '.' && n !== '..' && !/^\.+$/.test(n) && n === n.trim();
+const MODEL_RX = /\.(pth|onnx)$/i, INDEX_RX = /\.index$/i;
+const stemOf = (n) => String(n).replace(/\.[^.]+$/, '');
+const normOf = (n) => String(n).toLowerCase().replace(/[\s_\-]+/g, '');
+/** Список голосов библиотеки: [{name, model, index|null}] */
+function libraryList() {
+  const out = [];
+  let dirs = []; try { dirs = fs.readdirSync(voicesDir(), { withFileTypes: true }).filter((e) => e.isDirectory()); } catch (e) { return out; }
+  dirs.forEach((d) => {
+    let files = []; try { files = fs.readdirSync(path.join(voicesDir(), d.name)).filter((f) => !/\.part$/i.test(f)); } catch (e) { return; }
+    const model = files.find((f) => MODEL_RX.test(f)); if (!model) return;
+    out.push({ name: d.name, model, index: files.find((f) => INDEX_RX.test(f)) || null });
+  });
+  return out.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+}
+/** Принять один файл голоса потоком (PUT) в voices/<имя>/<файл>. */
+function libraryPut(name, file, stream, maxBytes) {
+  return new Promise((resolve, reject) => {
+    if (!okName(name) || !okName(file) || !(MODEL_RX.test(file) || INDEX_RX.test(file))) return reject(new Error('Неверное имя голоса или файла'));
+    const dir = path.join(voicesDir(), name); fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, file), tmp = dest + '.part'; let n = 0, failed = false;
+    const w = fs.createWriteStream(tmp);
+    const fail = (e) => { if (failed) return; failed = true; try { w.destroy(); fs.rmSync(tmp, { force: true }); } catch (x) { /* ок */ } reject(e); };
+    stream.on('data', (c) => { n += c.length; if (n > (maxBytes || 2e9)) { fail(new Error('Файл слишком большой')); stream.destroy(); } });
+    stream.on('error', fail); stream.on('aborted', () => fail(new Error('Загрузка прервана'))); w.on('error', fail);
+    w.on('finish', () => { if (failed) return; try { fs.renameSync(tmp, dest); resolve({ size: n }); } catch (e) { fail(e); } });
+    stream.pipe(w);
+  });
+}
+/** Отправить файл в движок (multipart потоком, без загрузки в память). */
+function uploadToEngine(file) {
+  return new Promise((resolve, reject) => {
+    const b = '----overvoice' + Date.now().toString(16), name = path.basename(file), size = fs.statSync(file).size;
+    const head = Buffer.from('--' + b + '\r\nContent-Disposition: form-data; name="filename"\r\n\r\n' + name + '\r\n--' + b + '\r\nContent-Disposition: form-data; name="file"; filename="' + name + '"\r\nContent-Type: application/octet-stream\r\n\r\n', 'utf8');
+    const tail = Buffer.from('\r\n--' + b + '--\r\n', 'utf8');
+    const r = http.request({ host: '127.0.0.1', port: cfg.port, path: '/upload_file', method: 'POST', headers: { 'Content-Type': 'multipart/form-data; boundary=' + b, 'Content-Length': head.length + size + tail.length } }, (res) => { res.resume(); res.on('end', () => (res.statusCode < 400 ? resolve() : reject(new Error('Движок не принял файл ' + name)))); });
+    r.on('error', reject); r.write(head);
+    const rs = fs.createReadStream(file); rs.on('error', reject); rs.on('end', () => r.end(tail)); rs.pipe(r, { end: false });
+  });
+}
+let syncing = false;
+/** Подключить к движку голоса из библиотеки, которых там ещё нет. */
+async function syncLibrary() {
+  if (syncing) return { busy: true, added: 0, full: 0, failed: 0, running: true };
+  syncing = true;
+  const res = { added: 0, full: 0, failed: 0, running: false };
+  try {
+    if (!(await alive())) return res;
+    res.running = true;
+    const j = await info(), slots = j.modelSlots || [];
+    const have = new Set(slots.filter((s) => s && s.name).map((s) => normOf(stemOf(s.name))));
+    const free = slots.filter((s) => s && !s.name).map((s) => Number(s.slotIndex));
+    for (const v of libraryList()) {
+      if (have.has(normOf(stemOf(v.model)))) continue;
+      const slot = free.shift(); if (slot == null) { res.full++; continue; }
+      try {
+        const dir = path.join(voicesDir(), v.name);
+        await uploadToEngine(path.join(dir, v.model)); if (v.index) await uploadToEngine(path.join(dir, v.index));
+        const fl = [{ name: v.model, kind: 'rvcModel', dir: '' }]; if (v.index) fl.push({ name: v.index, kind: 'rvcIndex', dir: '' });
+        await req('POST', '/load_model', { slot: String(slot), isHalf: 'true', params: JSON.stringify({ voiceChangerType: 'RVC', slot, isSampleMode: false, sampleId: '', files: fl, params: {} }) }, 180000);
+        res.added++; have.add(normOf(stemOf(v.model)));
+      } catch (e) { res.failed++; }
+    }
+    if (res.added) { try { await voices(); } catch (e) { /* кэш обновится позже */ } }
+  } finally { syncing = false; }
+  return res;
+}
+/** Библиотека + отметка, какие голоса уже подключены к движку. */
+async function libraryState() {
+  let slots = null; try { if (await alive()) slots = ((await info()).modelSlots || []).filter((s) => s && s.name); } catch (e) { slots = null; }
+  const loaded = slots && new Set(slots.map((s) => normOf(stemOf(s.name))));
+  return { running: !!slots, voices: libraryList().map((v) => ({ name: v.name, model: v.model, hasIndex: !!v.index, loaded: loaded ? loaded.has(normOf(stemOf(v.model))) : false })) };
+}
+
 // ---------- управление голосом (Overdeck и другие программы) ----------
 const voiceFile = () => path.join(DIR, 'nv_voices.json');
 function cachedVoices() { try { const j = JSON.parse(fs.readFileSync(voiceFile(), 'utf8')); return Array.isArray(j) ? j.filter((v) => v && Number.isInteger(v.slot) && typeof v.name === 'string') : []; } catch (e) { return []; } }
 async function voices() {
   const j = await info();
-  const list = (j.modelSlots || []).filter((s) => s && s.voiceChangerType === 'RVC' && s.name).map((s) => ({ slot: Number(s.slotIndex), name: String(s.name) }));
+  const lib = libraryList(), nice = (n) => { const v = lib.find((x) => normOf(stemOf(x.model)) === normOf(stemOf(n))); return v ? v.name : String(n); };
+  const list = (j.modelSlots || []).filter((s) => s && s.voiceChangerType === 'RVC' && s.name).map((s) => ({ slot: Number(s.slotIndex), name: nice(s.name) }));
   if (useFile) { try { fs.writeFileSync(voiceFile(), JSON.stringify(list)); } catch (e) { /* не критично */ } }   // чтобы список голосов был виден и при выключенном движке
   return list;
 }
@@ -244,4 +322,4 @@ async function cableInstall() {
   } catch (e) { cab = { state: 'error', text: e.message }; }
   return cab;
 }
-module.exports = { drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+module.exports = { libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };

@@ -1,4 +1,4 @@
-const assert = require('assert'); const VP = require('../public/nv/voicepack.js');
+const assert = require('assert'); const VP = require('../public/voicepack.js');
 const f = (p) => ({ path: p, name: p.split('/').pop() });
 let r = VP.group([f('Маша/model.pth'), f('Маша/added_IVF.index'), f('Маша/cover.png')]);
 assert.strictEqual(r.voices.length, 1); assert.strictEqual(r.voices[0].name, 'Маша'); assert.ok(r.voices[0].index);

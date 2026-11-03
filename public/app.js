@@ -17,7 +17,7 @@
     $('nvStart').hidden = !s.installed || g.running || g.state === 'starting'; $('nvStop').hidden = !g.running && g.state !== 'starting';
     $('nvAuto').checked = !!c.autostart;
     $('nvStat').textContent = g.state === 'starting' ? g.text : (g.running ? 'Движок работает' : (s.installed ? 'Движок остановлен. Нажми «Запустить движок».' : ''));
-    var fr = $('nvFrame');
+    var fr = $('nvFrame'); fr.hidden = !g.running; $('nvMain').classList.toggle('noeng', !g.running);
     if (g.running && !framed) { fr.src = '/nv/index.html'; framed = true; }
     if (!g.running && framed) { fr.src = 'about:blank'; framed = false; }
   }
@@ -45,5 +45,16 @@
   $('nvStart').addEventListener('click', function () { post('/api/nv/start').then(render); });
   $('nvStop').addEventListener('click', function () { post('/api/nv/stop').then(render); });
   $('nvAuto').addEventListener('change', function () { post('/api/nv/settings', { autostart: $('nvAuto').checked }).then(render); });
+  function loadLib() {
+    return api('/api/nv/library').then(function (j) {
+      var list = j.voices || [];
+      $('libList').innerHTML = list.map(function (v) { var st = v.loaded ? 'в движке' : (j.running ? 'подключается…' : 'ждёт запуска'); return '<li><span class="n" title="' + v.name.replace(/"/g, '&quot;') + '"></span><span class="st' + (v.loaded ? ' on' : '') + '">' + st + '</span></li>'; }).join('');
+      [].forEach.call($('libList').querySelectorAll('.n'), function (el, i) { el.textContent = list[i].name; });
+      $('libEmpty').hidden = list.length > 0;
+    }).catch(function () {});
+  }
+  $('libAdd').addEventListener('click', function () { VoiceDrop.open(); });
+  VoiceDrop.onDone(function () { loadLib(); });
+  loadLib(); setInterval(loadLib, 4000);
   loadDrives().then(load); loadCable(); setInterval(load, 1500); setInterval(loadCable, 3000);
 })();
