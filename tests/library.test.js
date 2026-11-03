@@ -39,6 +39,15 @@ const { Readable } = require('stream');
   const vs = await nv.voices(); ok(vs.some((v) => v.name === 'Маша') && vs.some((v) => v.name === 'Вася'), 'в списке голосов названия из библиотеки');
   await nv.libraryPut('Оля', 'o.pth', Readable.from([buf(50)]));
   r = await nv.syncLibrary(); ok(r.added === 0 && r.full === 1, 'нет мест: сообщает, не падает');
+  // пример голоса и настройки
+  await nv.libraryPut('Маша', 'sample.mp3', Readable.from([buf(2000)]));
+  ok(nv.samplePath('Маша') && nv.samplePath('Маша').endsWith('sample.mp3') && !nv.samplePath('Вася'), 'файл примера находится');
+  ok(nv.samplePath('../x') === null, 'путь к примеру не выходит из папки');
+  let vs0 = nv.libraryList().find((v) => v.name === 'Маша').settings; ok(vs0.pitch === 0 && vs0.idx === 50, 'настройки по умолчанию');
+  const sv = nv.saveVoiceSettings('Маша', { pitch: 99, idx: -5, gate: 33.4, vol: 150, junk: 1 }); ok(sv.pitch === 24 && sv.idx === 0 && sv.gate === 33 && sv.vol === 150 && !('junk' in sv), 'настройки ограничиваются');
+  ok(nv.libraryList().find((v) => v.name === 'Маша').settings.pitch === 24, 'настройки сохраняются в файл');
+  let nof = false; try { nv.saveVoiceSettings('Нет', {}); } catch (e) { nof = true; } ok(nof, 'настройки несуществующего голоса отклонены');
+  ok((await nv.libraryState()).voices.find((v) => v.name === 'Маша').hasSample === true, 'в состоянии есть отметка примера');
   eng.close(); fs.rmSync(tmp, { recursive: true, force: true });
   console.log('✓ library: ' + n + ' проверок'); process.exit(0);
 })().catch((e) => { console.error('✗', e.message); process.exit(1); });

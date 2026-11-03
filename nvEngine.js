@@ -184,29 +184,45 @@ function stop() {
 const voicesDir = () => path.join(baseDir(), 'voices');
 const SAFE = /^[^\\/:*?"<>|\x00-\x1f]{1,80}$/;
 const okName = (n) => typeof n === 'string' && SAFE.test(n) && n !== '.' && n !== '..' && !/^\.+$/.test(n) && n === n.trim();
-const MODEL_RX = /\.(pth|onnx)$/i, INDEX_RX = /\.index$/i;
+const MODEL_RX = /\.(pth|onnx)$/i, INDEX_RX = /\.index$/i, AUDIO_RX = /\.(mp3|wav|ogg|m4a|flac)$/i;
 const stemOf = (n) => String(n).replace(/\.[^.]+$/, '');
 const normOf = (n) => String(n).toLowerCase().replace(/[\s_\-]+/g, '');
-/** Список голосов библиотеки: [{name, model, index|null}] */
+const DEF_VS = { pitch: 0, idx: 50, gate: 20, vol: 100 };
+const clampN = (v, a, b, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(a, Math.min(b, Math.round(n))) : d; };
+/** Настройки голоса (высота, сходство, шум, громкость), у каждого голоса свои. */
+function voiceSettings(name) {
+  try { const j = JSON.parse(fs.readFileSync(path.join(voicesDir(), name, 'settings.json'), 'utf8')); return cleanVs(j); } catch (e) { return { ...DEF_VS }; }
+}
+const cleanVs = (j) => { const o = j && typeof j === 'object' ? j : {}; return { pitch: clampN(o.pitch, -24, 24, DEF_VS.pitch), idx: clampN(o.idx, 0, 100, DEF_VS.idx), gate: clampN(o.gate, 0, 100, DEF_VS.gate), vol: clampN(o.vol, 0, 200, DEF_VS.vol) }; };
+function saveVoiceSettings(name, body) {
+  if (!okName(name) || !fs.existsSync(path.join(voicesDir(), name))) throw new Error('Такого голоса нет');
+  const v = cleanVs(Object.assign({}, voiceSettings(name), body || {}));
+  fs.writeFileSync(path.join(voicesDir(), name, 'settings.json'), JSON.stringify(v)); return v;
+}
+/** Путь к файлу примера голоса или null. */
+function samplePath(name) { if (!okName(name)) return null; const v = libraryList().find((x) => x.name === name); return v && v.sample ? path.join(voicesDir(), name, v.sample) : null; }
+/** Список голосов библиотеки: [{name, model, index|null, sample|null, settings}] */
 function libraryList() {
   const out = [];
   let dirs = []; try { dirs = fs.readdirSync(voicesDir(), { withFileTypes: true }).filter((e) => e.isDirectory()); } catch (e) { return out; }
   dirs.forEach((d) => {
     let files = []; try { files = fs.readdirSync(path.join(voicesDir(), d.name)).filter((f) => !/\.part$/i.test(f)); } catch (e) { return; }
     const model = files.find((f) => MODEL_RX.test(f)); if (!model) return;
-    out.push({ name: d.name, model, index: files.find((f) => INDEX_RX.test(f)) || null });
+    const audio = files.filter((f) => AUDIO_RX.test(f)), sample = audio.find((f) => /^(sample|demo|preview|пример)/i.test(f)) || audio[0] || null;
+    out.push({ name: d.name, model, index: files.find((f) => INDEX_RX.test(f)) || null, sample, settings: voiceSettings(d.name) });
   });
   return out.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
 }
 /** Принять один файл голоса потоком (PUT) в voices/<имя>/<файл>. */
 function libraryPut(name, file, stream, maxBytes) {
   return new Promise((resolve, reject) => {
-    if (!okName(name) || !okName(file) || !(MODEL_RX.test(file) || INDEX_RX.test(file))) return reject(new Error('Неверное имя голоса или файла'));
+    if (!okName(name) || !okName(file) || !(MODEL_RX.test(file) || INDEX_RX.test(file) || AUDIO_RX.test(file))) return reject(new Error('Неверное имя голоса или файла'));
     const dir = path.join(voicesDir(), name); fs.mkdirSync(dir, { recursive: true });
     const dest = path.join(dir, file), tmp = dest + '.part'; let n = 0, failed = false;
     const w = fs.createWriteStream(tmp);
     const fail = (e) => { if (failed) return; failed = true; try { w.destroy(); fs.rmSync(tmp, { force: true }); } catch (x) { /* ок */ } reject(e); };
-    stream.on('data', (c) => { n += c.length; if (n > (maxBytes || 2e9)) { fail(new Error('Файл слишком большой')); stream.destroy(); } });
+    const cap = maxBytes || (AUDIO_RX.test(file) ? 30e6 : 2e9);
+    stream.on('data', (c) => { n += c.length; if (n > cap) { fail(new Error('Файл слишком большой')); stream.destroy(); } });
     stream.on('error', fail); stream.on('aborted', () => fail(new Error('Загрузка прервана'))); w.on('error', fail);
     w.on('finish', () => { if (failed) return; try { fs.renameSync(tmp, dest); resolve({ size: n }); } catch (e) { fail(e); } });
     stream.pipe(w);
@@ -254,7 +270,7 @@ async function syncLibrary() {
 async function libraryState() {
   let slots = null; try { if (await alive()) slots = ((await info()).modelSlots || []).filter((s) => s && s.name); } catch (e) { slots = null; }
   const loaded = slots && new Set(slots.map((s) => normOf(stemOf(s.name))));
-  return { running: !!slots, voices: libraryList().map((v) => ({ name: v.name, model: v.model, hasIndex: !!v.index, loaded: loaded ? loaded.has(normOf(stemOf(v.model))) : false })) };
+  return { running: !!slots, voices: libraryList().map((v) => ({ name: v.name, model: v.model, hasIndex: !!v.index, hasSample: !!v.sample, settings: v.settings, loaded: loaded ? loaded.has(normOf(stemOf(v.model))) : false })) };
 }
 
 // ---------- управление голосом (Overdeck и другие программы) ----------
@@ -322,4 +338,4 @@ async function cableInstall() {
   } catch (e) { cab = { state: 'error', text: e.message }; }
   return cab;
 }
-module.exports = { libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+module.exports = { samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };

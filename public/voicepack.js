@@ -3,7 +3,7 @@
   if (typeof module === 'object' && module.exports) module.exports = factory(); else root.VoicePack = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var MODEL = /\.(pth|onnx)$/i, INDEX = /\.index$/i;
+  var MODEL = /\.(pth|onnx)$/i, INDEX = /\.index$/i, AUDIO = /\.(mp3|wav|ogg|m4a|flac)$/i;
   var stem = function (n) { return String(n).replace(/\.[^.]+$/, ''); };
   var norm = function (s) { return String(s).toLowerCase().replace(/[\s_\-]+/g, ''); };
 
@@ -21,7 +21,8 @@
         var pair = idx.filter(function (x) { return norm(stem(x.name)) === norm(stem(m.name)); })[0];
         if (!pair && models.length === 1 && idx.length >= 1) pair = idx[0];
         var folder = dir ? dir.slice(dir.lastIndexOf('/') + 1) : '';
-        voices.push({ name: models.length === 1 && folder ? folder : stem(m.name), model: m, index: pair || null });
+        var au = list.filter(function (f) { return AUDIO.test(f.name); }), smp = au.filter(function (f) { return /^(sample|demo|preview|пример)/i.test(f.name); })[0] || (models.length === 1 ? au[0] : null);
+        voices.push({ name: models.length === 1 && folder ? folder : stem(m.name), model: m, index: pair || null, sample: smp || null });
       });
       if (!models.length && idx.length) skipped.push((dir ? dir + ': ' : '') + 'есть .index, но нет модели .pth');
     });

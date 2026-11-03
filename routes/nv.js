@@ -15,6 +15,8 @@ function main(ctx) {
     let name, file; try { name = decodeURIComponent(req.params.name); file = decodeURIComponent(req.params.file); } catch (e) { return res.status(400).json({ success: false, error: 'Неверное имя' }); }
     nv.libraryPut(name, file, req).then((r) => res.json({ success: true, size: r.size })).catch((e) => res.status(400).json({ success: false, error: e.message }));
   });
+  app.get('/api/nv/library/:name/sample', (req, res) => { const f = nv.samplePath(req.params.name); if (!f) return res.status(404).json({ success: false, error: 'Нет примера' }); res.sendFile(f); });
+  app.put('/api/nv/library/:name/settings', (req, res) => { try { res.json({ success: true, settings: nv.saveVoiceSettings(req.params.name, req.body) }); } catch (e) { res.status(400).json({ success: false, error: e.message }); } });
   app.post('/api/nv/library/sync', async (req, res) => { try { res.json(Object.assign({ success: true }, await nv.syncLibrary())); } catch (e) { res.status(500).json({ success: false, error: e.message }); } });
   app.get('/api/nv/voices', async (req, res) => { try { res.json({ success: true, voices: await nv.voices() }); } catch (e) { res.json({ success: false, voices: [], error: e.message }); } });
   // для Overdeck и других программ: включить голос слота (запускает обработку звука) и остановить её

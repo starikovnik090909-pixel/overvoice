@@ -43,10 +43,12 @@
   }
   function fromInput(inp) { return [].slice.call(inp.files || []).map(function (f) { return { path: f.webkitRelativePath || f.name, name: f.name, file: f }; }); }
 
-  function put(name, f, onp) {
+  var ext = function (n) { return (/\.[^.]+$/.exec(n) || [''])[0].toLowerCase(); };
+  var target = function (name, f, kind) { return (kind === 'sample' ? 'sample' : name) + ext(f.name); };   // под именем голоса: model.pth у разных голосов одинаковый
+  function put(name, f, kind, onp) {
     return new Promise(function (resolve, reject) {
       var x = new XMLHttpRequest();
-      x.open('PUT', '/api/nv/library/' + encodeURIComponent(name) + '/' + encodeURIComponent(clean(f.name)));
+      x.open('PUT', '/api/nv/library/' + encodeURIComponent(name) + '/' + encodeURIComponent(target(name, f, kind)));
       x.setRequestHeader('Content-Type', 'application/octet-stream');
       x.upload.onprogress = function (e) { if (e.lengthComputable) onp(e.loaded); };
       x.onload = function () { x.status < 400 ? resolve() : reject(new Error('put')); }; x.onerror = function () { reject(new Error('put')); };
@@ -76,7 +78,7 @@
           var total = v.model.file.size + (v.index ? v.index.file.size : 0), done = 0;
           var tick = function (cur) { var p = Math.min(1, (done + cur) / (total || 1)); bar.style.width = Math.round(p * 100) + '%'; st.textContent = Math.round(p * 100) + '%'; };
           st.textContent = '0%';
-          return put(v.libName, v.model.file, tick).then(function () { done = v.model.file.size; if (v.index) return put(v.libName, v.index.file, tick); })
+          return put(v.libName, v.model.file, 'model', tick).then(function () { done = v.model.file.size; if (v.index) return put(v.libName, v.index.file, 'index', tick); }).then(function () { if (v.index) done += v.index.file.size; if (v.sample && v.sample.file.size < 30e6) return put(v.libName, v.sample.file, 'sample', function () { }).catch(function () { }); })
             .then(function () { bar.style.width = '100%'; fin('ok', 'сохранён'); added++; }).catch(function () { fin('err', 'ошибка'); failed++; });
         });
       });

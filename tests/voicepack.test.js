@@ -9,4 +9,5 @@ r = VP.group([f('Pack/one.pth'), f('Pack/two.pth'), f('Pack/two.index')]);
 assert.deepStrictEqual(r.voices.map((v) => v.name), ['one', 'two']); assert.strictEqual(r.voices[0].index, null); assert.strictEqual(r.voices[1].index.name, 'two.index');
 r = VP.group([f('a/readme.txt')]); assert.strictEqual(r.voices.length, 0);
 r = VP.group([{ path: 'X\\Y\\m.pth', name: 'm.pth' }]); assert.strictEqual(r.voices[0].name, 'Y');
+r = VP.group([f('Z/m.pth'), f('Z/demo.mp3'), f('Z/other.wav')]); ok2 = r.voices[0].sample && r.voices[0].sample.name === 'demo.mp3'; assert(ok2, 'sample');
 console.log('voicepack: ok');
