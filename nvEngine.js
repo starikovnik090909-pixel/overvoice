@@ -123,6 +123,27 @@ function install() {
   return busy;
 }
 
+// ---------- скрыть собственное окно движка (Windows) ----------
+// Готовая сборка сама открывает окно «Voice Changer Client Demo». Оно нам не нужно: всё управление идёт из Overvoice.
+// Пока движок стартует (до двух минут), окна с таким названием прячутся, процесс при этом продолжает работать.
+const HIDE_PS = `Add-Type @"
+using System; using System.Runtime.InteropServices; using System.Text;
+public class OvW { public delegate bool CB(IntPtr h, IntPtr l);
+[DllImport("user32.dll")] public static extern bool EnumWindows(CB cb, IntPtr l);
+[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+public static void Hide() { EnumWindows((h, l) => { if (IsWindowVisible(h)) { var sb = new StringBuilder(256); GetWindowText(h, sb, 256); if (sb.ToString().StartsWith("Voice Changer Client")) ShowWindow(h, 0); } return true; }, IntPtr.Zero); } }
+"@
+for ($i = 0; $i -lt 240; $i++) { [OvW]::Hide(); Start-Sleep -Milliseconds 500 }`;
+function hideEngineWindow() {
+  if (process.platform !== 'win32') return;
+  try {
+    const f = path.join(os.tmpdir(), 'overvoice-hide.ps1'); fs.writeFileSync(f, HIDE_PS);
+    execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', f], { windowsHide: true, timeout: 150000 }, () => {});
+  } catch (e) { /* окно просто останется видимым */ }
+}
+
 // ---------- запуск ----------
 function req(method, p, body, ms) {
   return new Promise((resolve, reject) => {
@@ -143,6 +164,7 @@ async function start() {
   const exe = findExe(); if (!exe) { setSt('error', 'Движок не установлен'); return state(); }
   log = []; setSt('starting', 'Запускаю движок (в первый раз до нескольких минут)…');
   child = spawn(exe, launchArgs(exe), { cwd: path.dirname(exe), windowsHide: true });
+  hideEngineWindow();
   const keep = (b) => { String(b).split(/\r?\n/).filter(Boolean).forEach((l) => { log.push(l.slice(0, 300)); if (log.length > 60) log.shift(); }); };
   child.stdout.on('data', keep); child.stderr.on('data', keep);
   child.on('exit', (code) => { child = null; if (st.state === 'running' || st.state === 'starting') setSt('ready', code ? 'Движок остановился (код ' + code + ')' : 'Движок остановлен'); });
