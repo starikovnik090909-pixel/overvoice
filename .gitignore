@@ -1,0 +1,5 @@
+node_modules/
+nv-engine/
+nv-engine.zip*
+nv_settings.json
+nv_voices.json

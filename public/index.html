@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Overvoice</title><link rel="stylesheet" href="app.css"></head><body>
+<header><div class="logo">OV</div><b>Overvoice</b><small>нейроголос для стрима</small><span class="sp"></span>
+  <button class="btn" type="button" id="nvStart" hidden>▶ Запустить движок</button><button class="btn" type="button" id="nvStop" hidden>■ Остановить движок</button></header>
+<main>
+  <section class="setup" id="nvSetup" hidden>
+    <h3>Установка движка</h3>
+    <p class="sm">Движок скачивается с Hugging Face автора VCClient. Файл большой (около 3 ГБ), нужно примерно 8 ГБ свободного места. Загрузку можно прервать, она продолжится с того же места.</p>
+    <label class="fl"><em>Твоя видеокарта</em><select id="nvVariant"></select></label>
+    <div class="prog" id="nvProg" hidden><i id="nvBar"></i></div>
+    <p class="sm" id="nvMsg"></p>
+    <button class="btn primary" type="button" id="nvInstall">Скачать и установить</button>
+    <p class="sm">Ещё понадобится бесплатный виртуальный аудиокабель VB-Cable (vb-audio.com/Cable): Overvoice отдаёт в него голос, а в OBS ты берёшь его как «Захват входящего звука».</p>
+  </section>
+  <section class="mainw" id="nvMain" hidden>
+    <iframe id="nvFrame" title="Overvoice" src="about:blank"></iframe>
+    <aside>
+      <label class="sw"><input type="checkbox" id="nvAuto"><i></i><span>Запускать движок вместе с Overvoice</span></label>
+      <p class="sm" id="nvStat"></p>
+      <p class="sm">Для Overdeck: <code>POST /api/nv/voice {"slot": 0}</code> включает голос, <code>POST /api/nv/release</code> останавливает.</p>
+    </aside>
+  </section>
+</main>
+<script src="app.js"></script></body></html>

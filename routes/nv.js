@@ -1,0 +1,17 @@
+// routes/nv.js — установка и запуск движка, настройки, управление голосом, пропуск запросов окна к движку.
+function main(ctx) {
+  const { nv, app } = ctx;
+  const ok = (res, extra) => res.json(Object.assign({ success: true }, nv.state(), extra || {}));
+  app.get('/api/nv/state', async (req, res) => { let voices = nv.cachedVoices(); try { if (nv.state().status.running) voices = await nv.voices(); } catch (e) { /* движок занят */ } ok(res, { voices }); });
+  app.post('/api/nv/settings', (req, res) => { nv.update(Object.assign({}, nv.getSettings(), req.body || {})); ok(res); });
+  app.post('/api/nv/install', (req, res) => { nv.install(); setTimeout(() => ok(res), 300); });
+  app.post('/api/nv/start', (req, res) => { nv.start().catch(() => {}); setTimeout(() => ok(res), 300); });
+  app.post('/api/nv/stop', (req, res) => { nv.stop(); ok(res); });
+  app.get('/api/nv/voices', async (req, res) => { try { res.json({ success: true, voices: await nv.voices() }); } catch (e) { res.json({ success: false, voices: [], error: e.message }); } });
+  // для Overdeck и других программ: включить голос слота (запускает обработку звука) и остановить её
+  app.post('/api/nv/voice', async (req, res) => { try { const slot = Number((req.body || {}).slot); if (!Number.isInteger(slot) || slot < 0 || slot > 99) throw new Error('Неверный номер голоса'); await nv.useVoice(slot); ok(res); } catch (e) { res.status(400).json({ success: false, error: e.message }); } });
+  app.post('/api/nv/release', async (req, res) => { await nv.release(); ok(res); });
+  app.all('/api/nv/engine/*', (req, res) => nv.proxy(req, res, req.originalUrl.replace(/^\/api\/nv\/engine/, '') || '/'));
+  return {};
+}
+module.exports = { main };
