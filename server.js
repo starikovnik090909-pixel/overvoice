@@ -13,6 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 nv.init({ dir: __dirname });
 require('./routes/nv').main({ nv, app });
+require('./routes/link').main({ app, dir: __dirname });
 const server = app.listen(PORT, '127.0.0.1', () => {
   const url = 'http://localhost:' + PORT;
   console.log('Overvoice: ' + url + '\nОстановить — закрой это окно.');
