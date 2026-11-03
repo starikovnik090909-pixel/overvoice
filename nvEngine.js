@@ -98,13 +98,23 @@ function unpack(zip, dir) {
     execFile(win ? 'tar' : 'unzip', win ? ['-xf', zip, '-C', dir] : ['-q', '-o', zip, '-d', dir], { maxBuffer: 1 << 26 }, (e) => (e ? reject(new Error('Не удалось распаковать: ' + e.message)) : resolve()));
   });
 }
+/** Есть ли рядом с запускным файлом python3xx.dll (без него движок не стартует). */
+const hasPyDll = (exe) => !!exe && walk(path.dirname(exe), 1, (n) => /^python3\d+\.dll$/i.test(n)) !== null;
+/** Запасная распаковка средствами .NET (PowerShell), если tar пропустил файлы. */
+function unpackPs(zip, dir) {
+  return new Promise((resolve, reject) => {
+    const q = (x) => "'" + x.replace(/'/g, "''") + "'";
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[System.IO.Compression.ZipFile]::OpenRead(' + q(zip) + '); try { foreach($e in $z.Entries){ if($e.FullName.EndsWith("/")){continue}; $t=Join-Path ' + q(dir) + ' $e.FullName; New-Item -ItemType Directory -Force -Path (Split-Path $t) | Out-Null; [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e,$t,$true) } } finally { $z.Dispose() }'], { maxBuffer: 1 << 26, windowsHide: true, timeout: 1800000 }, (e) => (e ? reject(new Error('Не удалось распаковать: ' + e.message)) : resolve()));
+  });
+}
 function freeGb(dir) { try { const s = fs.statfsSync(dir); return (s.bavail * s.bsize) / 1073741824; } catch (e) { return Infinity; } }
 
 /** Скачать и установить движок. Можно прервать закрытием программы: загрузка продолжится с того же места. */
-function install() {
+function install(force) {
   if (busy) return busy;
   busy = (async () => {
     try {
+      if (force) { stop(); await new Promise((r) => setTimeout(r, 800)); try { fs.rmSync(engineDir(), { recursive: true, force: true }); } catch (e) { throw new Error('Не удалось удалить старый движок: ' + e.message + '. Закрой программы, которые его используют.'); } }
       fs.mkdirSync(baseDir(), { recursive: true });
       const need = (VARIANTS[cfg.variant].gb || 3.5) * 2.2;
       if (freeGb(baseDir()) < need) throw new Error('Мало места на диске: нужно около ' + Math.ceil(need) + ' ГБ свободно');
@@ -114,10 +124,15 @@ function install() {
       await download(zipUrl(), zip, (got, total) => { const now = Date.now(); if (now - last < 700) return; last = now; st = { state: 'downloading', text: 'Скачиваю движок: ' + (got / 1073741824).toFixed(2) + (total ? ' из ' + (total / 1073741824).toFixed(2) : '') + ' ГБ', pct: total ? Math.round(got / total * 100) : 0 }; onChange(); });
       setSt('unpacking', 'Распаковываю (несколько минут)…');
       await unpack(zip, engineDir());
-      try { fs.unlinkSync(zip); } catch (e) { /* не критично */ }
+      if (win && !hasPyDll(findExe())) {   // tar иногда молча пропускает файлы: пробуем второй способ
+        setSt('unpacking', 'Проверяю файлы и распаковываю ещё раз другим способом…');
+        await unpackPs(zip, engineDir());
+      }
       if (!findExe()) throw new Error('В архиве не нашёлся запускной файл движка');
+      if (win && !hasPyDll(findExe())) throw new Error('После распаковки не хватает python310.dll. Скорее всего файл удалил антивирус: добавь папку Овервойса в исключения и нажми «Переустановить движок».');
+      try { fs.unlinkSync(zip); } catch (e) { /* не критично */ }
       setSt('ready', 'Движок установлен');
-    } catch (e) { setSt('error', e.message); }
+    } catch (e) { setSt('error', e.message, /python310/.test(e.message) ? { fix: 'reinstall' } : {}); }
     finally { busy = null; }
   })();
   return busy;
@@ -162,7 +177,7 @@ async function start() {
   if (child) return state();
   if (await alive()) { setSt('running', 'Движок уже запущен'); syncLibrary().catch(() => {}); return state(); }
   const exe = findExe(); if (!exe) { setSt('error', 'Движок не установлен'); return state(); }
-  if (win && !fs.existsSync(path.join(path.dirname(exe), 'python310.dll')) && walk(path.dirname(exe), 2, (n) => /^python3\d+\.dll$/i.test(n)) === null) { setSt('error', 'В папке движка нет python310.dll: файл удалён или не докачался (часто это антивирус). Добавь папку в исключения антивируса и переустанови движок.'); return state(); }
+  if (win && !fs.existsSync(path.join(path.dirname(exe), 'python310.dll')) && walk(path.dirname(exe), 2, (n) => /^python3\d+\.dll$/i.test(n)) === null) { setSt('error', 'В папке движка нет python310.dll: файл не распаковался или его удалил антивирус. Нажми «Переустановить движок».', { fix: 'reinstall' }); return state(); }
   log = []; setSt('starting', 'Запускаю движок (в первый раз до нескольких минут)…');
   child = spawn(exe, launchArgs(exe), { cwd: path.dirname(exe), windowsHide: true });
   hideEngineWindow();
