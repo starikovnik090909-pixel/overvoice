@@ -18,3 +18,4 @@ aside{display:flex;flex-direction:column;gap:12px;background:var(--card);border:
 .sw{display:flex;align-items:center;gap:10px;cursor:pointer}.sw input{display:none}.sw i{width:40px;height:22px;border-radius:11px;background:var(--line);position:relative;flex:none;transition:.2s}.sw i::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:.2s}.sw input:checked+i{background:var(--on)}.sw input:checked+i::after{left:21px}
 .pill{height:30px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:var(--card);font-size:12px;cursor:pointer}
 .pill.ok{color:var(--on);border-color:var(--on)}.pill.off{color:var(--mute)}
+.cab{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--tile,#1c2029);border:1px solid var(--line);border-radius:12px;padding:10px 12px}.cab p{margin:2px 0 0}

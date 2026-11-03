@@ -7,6 +7,9 @@ function main(ctx) {
   app.post('/api/nv/install', (req, res) => { nv.install(); setTimeout(() => ok(res), 300); });
   app.post('/api/nv/start', (req, res) => { nv.start().catch(() => {}); setTimeout(() => ok(res), 300); });
   app.post('/api/nv/stop', (req, res) => { nv.stop(); ok(res); });
+  app.get('/api/nv/drives', async (req, res) => res.json({ success: true, drives: await nv.drives() }));
+  app.get('/api/nv/cable', async (req, res) => res.json(Object.assign({ success: true }, await nv.cableState())));
+  app.post('/api/nv/cable/install', (req, res) => { nv.cableInstall(); setTimeout(() => res.json({ success: true }), 200); });
   app.get('/api/nv/voices', async (req, res) => { try { res.json({ success: true, voices: await nv.voices() }); } catch (e) { res.json({ success: false, voices: [], error: e.message }); } });
   // для Overdeck и других программ: включить голос слота (запускает обработку звука) и остановить её
   app.post('/api/nv/voice', async (req, res) => { try { const slot = Number((req.body || {}).slot); if (!Number.isInteger(slot) || slot < 0 || slot > 99) throw new Error('Неверный номер голоса'); await nv.useVoice(slot); ok(res); } catch (e) { res.status(400).json({ success: false, error: e.message }); } });

@@ -3,6 +3,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const https = require('https');
 const { spawn, execFile } = require('child_process');
@@ -12,13 +13,14 @@ const VARIANTS = {
   cuda: { file: 'MMVCServerSIO_win_onnxgpu-cuda_v.1.5.3.18a.zip', gb: 3.3, label: 'видеокарта NVIDIA (CUDA)' },
   dml: { file: 'MMVCServerSIO_win_onnxdirectML-cuda_v.1.5.3.18a.zip', gb: 3.2, label: 'любая видеокарта (DirectML)' },
 };
-const DEFAULTS = { variant: 'cuda', port: 18888, autostart: false, urlOverride: '', obsInput: 'NV Микрофон' };
+const DEFAULTS = { variant: 'cuda', port: 18888, autostart: false, urlOverride: '', obsInput: 'NV Микрофон', dir: '' };
 let DIR = __dirname, cfg = { ...DEFAULTS }, useFile = true;
 let st = { state: 'none', text: '', pct: 0 };
 let child = null, log = [], busy = null, onChange = () => {};
 const setSt = (state, text, extra) => { st = Object.assign({ state, text: text || '', pct: 0 }, extra || {}); onChange(); };
 
-const engineDir = () => path.join(DIR, 'nv-engine');
+const baseDir = () => cfg.dir || DIR;   // куда ставится движок: выбранная папка или папка программы
+const engineDir = () => path.join(baseDir(), 'nv-engine');
 const cfgFile = () => path.join(DIR, 'nv_settings.json');
 function load() { try { const j = JSON.parse(fs.readFileSync(cfgFile(), 'utf8')); cfg = clean(j); } catch (e) { cfg = { ...DEFAULTS }; } }
 function clean(j) {
@@ -27,6 +29,7 @@ function clean(j) {
   return {
     variant: VARIANTS[o.variant] ? o.variant : cfg.variant, port: Number.isInteger(n) && n >= 1024 && n <= 65535 ? n : cfg.port,
     autostart: typeof o.autostart === 'boolean' ? o.autostart : cfg.autostart, urlOverride: typeof o.urlOverride === 'string' && /^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:\/])[^\s]+\.zip$/i.test(o.urlOverride) ? o.urlOverride : (o.urlOverride === '' ? '' : cfg.urlOverride),
+    dir: typeof o.dir === 'string' ? (o.dir === '' ? '' : (/^[A-Za-z]:\\[^<>:"|?*\x00-\x1f]{0,200}$/.test(o.dir) && !/(^|\\)\.\.(\\|$)/.test(o.dir) ? o.dir.replace(/\\+$/, '') : cfg.dir)) : cfg.dir,
     obsInput: typeof o.obsInput === 'string' ? o.obsInput.trim().slice(0, 120) || cfg.obsInput : cfg.obsInput,
   };
 }
@@ -37,7 +40,7 @@ function init(o) {
   st = findExe() ? { state: 'ready', text: 'Движок установлен', pct: 0 } : { state: 'none', text: '', pct: 0 };
 }
 const getSettings = () => ({ ...cfg });
-function update(b) { cfg = clean(b); persist(); return state(); }
+function update(b) { if (busy && b && b.dir !== undefined && b.dir !== cfg.dir) return state(); cfg = clean(b); persist(); return state(); }
 const zipUrl = () => cfg.urlOverride || BASE + VARIANTS[cfg.variant].file;
 function state() { return { settings: getSettings(), status: { ...st, running: !!child && st.state === 'running' }, variants: VARIANTS, tail: log.slice(-12), installed: !!findExe() }; }
 
@@ -102,10 +105,10 @@ function install() {
   if (busy) return busy;
   busy = (async () => {
     try {
-      fs.mkdirSync(DIR, { recursive: true });
+      fs.mkdirSync(baseDir(), { recursive: true });
       const need = (VARIANTS[cfg.variant].gb || 3.5) * 2.2;
-      if (freeGb(DIR) < need) throw new Error('Мало места на диске: нужно около ' + Math.ceil(need) + ' ГБ свободно');
-      const zip = path.join(DIR, 'nv-engine.zip');
+      if (freeGb(baseDir()) < need) throw new Error('Мало места на диске: нужно около ' + Math.ceil(need) + ' ГБ свободно');
+      const zip = path.join(baseDir(), 'nv-engine.zip');
       setSt('downloading', 'Скачиваю движок…', { pct: 0 });
       let last = 0;
       await download(zipUrl(), zip, (got, total) => { const now = Date.now(); if (now - last < 700) return; last = now; st = { state: 'downloading', text: 'Скачиваю движок: ' + (got / 1073741824).toFixed(2) + (total ? ' из ' + (total / 1073741824).toFixed(2) : '') + ' ГБ', pct: total ? Math.round(got / total * 100) : 0 }; onChange(); });
@@ -187,4 +190,36 @@ function proxy(rq, rs, sub) {
   r.on('error', () => { if (!rs.headersSent) rs.status(502).json({ success: false, error: 'Движок не запущен' }); else rs.end(); });
   if (body != null) r.end(body); else rq.pipe(r);
 }
-module.exports = { cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+// ---------- диски и виртуальный кабель (Windows) ----------
+const win = process.platform === 'win32';
+const ps = (cmd, ms) => new Promise((resolve) => execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd], { timeout: ms || 20000, windowsHide: true }, (e, out) => resolve(e ? '' : String(out))));
+/** Локальные диски с размером свободного места. Вне Windows возвращает пустой список. */
+async function drives() {
+  if (!win) return [];
+  const out = await ps("Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null -and $_.Name.Length -eq 1 } | ForEach-Object { $_.Name + ':' + [math]::Round($_.Free/1GB,1) }");
+  return out.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^[A-Za-z]:[\d.,]+$/.test(l)).map((l) => ({ letter: l[0].toUpperCase(), freeGb: Number(l.slice(2).replace(',', '.')) }));
+}
+let cab = { state: 'idle', text: '' };
+const CABLE_URL = 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip';
+async function cableInstalled() { if (!win) return false; return /CABLE/i.test(await ps("(Get-CimInstance Win32_SoundDevice | Select-Object -ExpandProperty Name) -join ';'")); }
+async function cableState() { const ok = await cableInstalled(); if (ok && cab.state !== 'working') cab = { state: 'ok', text: 'Виртуальный кабель установлен' }; return { installed: ok, supported: win, status: { ...cab } }; }
+/** Скачать VB-Cable с сайта vb-audio.com и запустить его установщик. Windows спросит разрешение на установку драйвера. */
+async function cableInstall() {
+  if (!win) { cab = { state: 'error', text: 'Установка кабеля работает только в Windows' }; return cab; }
+  if (cab.state === 'working') return cab;
+  cab = { state: 'working', text: 'Скачиваю VB-Cable…' };
+  try {
+    const dir = path.join(os.tmpdir(), 'overvoice-vbcable'); fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir, { recursive: true });
+    const zip = path.join(dir, 'vbcable.zip');
+    await download(CABLE_URL, zip, () => {});
+    cab = { state: 'working', text: 'Распаковываю…' }; await unpack(zip, dir);
+    const exe = walk(dir, 2, (n) => /^VBCABLE_Setup_x64\.exe$/i.test(n)); if (!exe) throw new Error('В архиве не нашёлся установщик');
+    cab = { state: 'working', text: 'Windows спросит разрешение: нажми «Да», затем «Установить»…' };
+    await new Promise((resolve) => execFile('powershell', ['-NoProfile', '-Command', "Start-Process -FilePath '" + exe.replace(/'/g, "''") + "' -ArgumentList '-i','-h' -Verb RunAs -Wait"], { timeout: 300000, windowsHide: true }, () => resolve()));
+    const ok = await cableInstalled();
+    cab = ok ? { state: 'ok', text: 'Кабель установлен. Если он не виден в списке звука, перезагрузи компьютер.' } : { state: 'error', text: 'Не удалось установить (разрешение не дано?). Попробуй ещё раз.' };
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* не критично */ }
+  } catch (e) { cab = { state: 'error', text: e.message }; }
+  return cab;
+}
+module.exports = { drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
