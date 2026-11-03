@@ -6,6 +6,7 @@ function main(ctx) {
   app.post('/api/nv/settings', (req, res) => { nv.update(Object.assign({}, nv.getSettings(), req.body || {})); ok(res); });
   app.post('/api/nv/install', (req, res) => { nv.install(); setTimeout(() => ok(res), 300); });
   app.post('/api/nv/start', (req, res) => { nv.start().catch(() => {}); setTimeout(() => ok(res), 300); });
+  app.post('/api/nv/vc/install', (req, res) => { nv.vcInstall().catch(() => {}); setTimeout(() => ok(res), 300); });
   app.post('/api/nv/stop', (req, res) => { nv.stop(); ok(res); });
   const obs = require('../obsLink');
   app.get('/api/nv/obs', (req, res) => res.json({ success: true, obs: obs.get() }));
