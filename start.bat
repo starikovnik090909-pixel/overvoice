@@ -1,9 +1,14 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+if exist "%~dp0node\node.exe" (
+  "%~dp0node\node.exe" server.js
+  pause
+  exit /b
+)
 where node >nul 2>nul
 if errorlevel 1 (
-  echo Нужен Node.js: https://nodejs.org
+  echo Нужен Node.js: https://nodejs.org (или поставь Overvoice установщиком)
   pause
   exit /b 1
 )

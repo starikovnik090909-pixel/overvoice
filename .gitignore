@@ -4,3 +4,5 @@ nv-engine.zip*
 nv_settings.json
 nv_voices.json
 link_settings.json
+autoinstall.flag
+dist/

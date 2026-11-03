@@ -18,6 +18,9 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   const url = 'http://localhost:' + PORT;
   console.log('Overvoice: ' + url + '\nОстановить — закрой это окно.');
   if (process.env.OVERVOICE_NO_OPEN !== '1' && process.platform === 'win32') exec('start "" "' + url + '"');
+  // первая установка из установщика: он кладёт файл-метку, и движок скачивается сам
+  const flag = path.join(__dirname, 'autoinstall.flag');
+  if (require('fs').existsSync(flag)) { try { require('fs').unlinkSync(flag); } catch (e) { /* не критично */ } if (!nv.state().installed) nv.install(); }
   if (nv.getSettings().autostart && nv.state().installed) setTimeout(() => nv.start().catch(() => {}), 3000);
 });
 server.on('error', (e) => { console.error(e.code === 'EADDRINUSE' ? 'Порт ' + PORT + ' занят: Overvoice уже запущен?' : e.message); process.exit(1); });
