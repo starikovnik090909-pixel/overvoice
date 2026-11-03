@@ -12,6 +12,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 nv.init({ dir: __dirname });
+require('./obsLink').load(require('path').join(__dirname, 'obs_link.json'));
 require('./routes/nv').main({ nv, app });
 require('./routes/link').main({ app, dir: __dirname });
 // остановка по просьбе Overdeck (с компьютера, где запущено): выключает движок и закрывается

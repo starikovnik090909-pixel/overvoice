@@ -8,3 +8,4 @@ autoinstall.flag
 dist/
 
 voices/
+obs_link.json

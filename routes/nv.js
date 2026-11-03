@@ -7,6 +7,11 @@ function main(ctx) {
   app.post('/api/nv/install', (req, res) => { nv.install(); setTimeout(() => ok(res), 300); });
   app.post('/api/nv/start', (req, res) => { nv.start().catch(() => {}); setTimeout(() => ok(res), 300); });
   app.post('/api/nv/stop', (req, res) => { nv.stop(); ok(res); });
+  const obs = require('../obsLink');
+  app.get('/api/nv/obs', (req, res) => res.json({ success: true, obs: obs.get() }));
+  app.put('/api/nv/obs', (req, res) => res.json({ success: true, obs: obs.save(req.body) }));
+  app.get('/api/nv/obs/inputs', async (req, res) => { try { res.json({ success: true, inputs: await obs.inputs() }); } catch (e) { res.json({ success: false, inputs: [], error: e.message }); } });
+  app.post('/api/nv/obs/live', async (req, res) => { try { res.json(Object.assign({ success: true }, await obs.live(!!(req.body || {}).on))); } catch (e) { res.json({ success: false, error: e.message }); } });
   app.get('/api/nv/drives', async (req, res) => res.json({ success: true, drives: await nv.drives() }));
   app.get('/api/nv/cable', async (req, res) => res.json(Object.assign({ success: true }, await nv.cableState())));
   app.post('/api/nv/cable/install', (req, res) => { nv.cableInstall(); setTimeout(() => res.json({ success: true }), 200); });

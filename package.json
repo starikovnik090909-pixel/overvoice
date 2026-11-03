@@ -1,9 +1,9 @@
 {
   "name": "overvoice",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Overvoice: нейроголос для стрима на основе VCClient (Wataru Okada, MIT). Отдельная программа и дополнение для Overdeck.",
   "main": "server.js",
   "private": true,
-  "scripts": { "start": "node server.js", "test": "node tests/nv.test.js && node tests/voicepack.test.js && node tests/library.test.js" },
+  "scripts": { "start": "node server.js", "test": "node tests/nv.test.js && node tests/voicepack.test.js && node tests/library.test.js && node tests/obs.test.js" },
   "dependencies": { "express": "^4.19.2" }
 }
