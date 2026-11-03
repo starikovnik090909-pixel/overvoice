@@ -1,0 +1,12 @@
+const assert = require('assert'); const VP = require('../public/nv/voicepack.js');
+const f = (p) => ({ path: p, name: p.split('/').pop() });
+let r = VP.group([f('Маша/model.pth'), f('Маша/added_IVF.index'), f('Маша/cover.png')]);
+assert.strictEqual(r.voices.length, 1); assert.strictEqual(r.voices[0].name, 'Маша'); assert.ok(r.voices[0].index);
+r = VP.group([f('Библиотека/A/a.pth'), f('Библиотека/A/a.index'), f('Библиотека/B/b.onnx'), f('Библиотека/C/x.index')]);
+assert.deepStrictEqual(r.voices.map((v) => v.name), ['A', 'B']); assert.strictEqual(r.voices[1].index, null); assert.strictEqual(r.skipped.length, 1);
+r = VP.group([f('голос.pth'), f('голос.index')]); assert.strictEqual(r.voices[0].name, 'голос'); assert.ok(r.voices[0].index);
+r = VP.group([f('Pack/one.pth'), f('Pack/two.pth'), f('Pack/two.index')]);
+assert.deepStrictEqual(r.voices.map((v) => v.name), ['one', 'two']); assert.strictEqual(r.voices[0].index, null); assert.strictEqual(r.voices[1].index.name, 'two.index');
+r = VP.group([f('a/readme.txt')]); assert.strictEqual(r.voices.length, 0);
+r = VP.group([{ path: 'X\\Y\\m.pth', name: 'm.pth' }]); assert.strictEqual(r.voices[0].name, 'Y');
+console.log('voicepack: ok');

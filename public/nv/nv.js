@@ -21,10 +21,11 @@
     var list = voicesOf(info), cur = Number(info.modelSlotIndex);
     $('voices').innerHTML = list.map(function (s, n) {
       var sel = Number(s.slotIndex) === cur;
-      return '<button type="button" class="v" aria-pressed="' + sel + '" data-slot="' + s.slotIndex + '"><span class="em">' + EMOJI[n % EMOJI.length] + '</span><span class="nm" title="' + esc(s.name) + '">' + esc(s.name) + '</span><span class="ds">' + esc(s.credit || s.description || 'RVC') + '</span></button>';
+      return '<button type="button" class="v" aria-pressed="' + sel + '" data-slot="' + s.slotIndex + '"><span class="em">' + EMOJI[n % EMOJI.length] + '</span><span class="nm" title="' + esc(label(s)) + '">' + esc(label(s)) + '</span><span class="ds">' + esc(s.credit || s.description || 'RVC') + '</span></button>';
     }).join('') + '<button type="button" class="v add" id="addv">＋ Добавить свой голос</button>';
-    if (!list.length) say('vmsg', 'Голосов пока нет. Нажми «Добавить свой голос» и выбери файл модели (.pth, и .index если он есть).');
+    if (!list.length) say('vmsg', 'Голосов пока нет. Нажми «Добавить свой голос» и кинь папку с голосом (там должен лежать файл .pth).');
   }
+  var label = function (s) { var n = names(), m = n[s.name] || n[VoicePack.stem(s.name)]; return m || s.name; };
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
 
   function fillDevices(sel, devices, withOff) {
@@ -92,21 +93,88 @@
     chain.then(load).catch(function () { say('cable', 'Не удалось запустить. Проверь микрофон и выход.', 'err'); }).then(function () { busy = false; $('go').disabled = false; });
   });
 
-  // добавление своего голоса: .pth (+ .index)
-  $('file').addEventListener('change', function () {
-    var files = [].slice.call($('file').files); $('file').value = ''; if (!files.length) return;
-    var pth = files.filter(function (f) { return /\.(pth|onnx)$/i.test(f.name); })[0], idx = files.filter(function (f) { return /\.index$/i.test(f.name); })[0];
-    if (!pth) { say('vmsg', 'Нужен файл модели .pth (можно сразу выбрать и .index).', 'err'); return; }
-    var free = (info.modelSlots || []).filter(function (s) { return s && !s.name; })[0], slot = free ? Number(free.slotIndex) : -1;
-    if (slot < 0) { say('vmsg', 'Все места заняты. Удали лишний голос из папки models.', 'err'); return; }
-    say('vmsg', 'Загружаю голос…'); busy = true;
-    var up = function (f) { var fd = new FormData(); fd.append('file', f); fd.append('filename', f.name); return fetch(BASE + '/upload_file', { method: 'POST', body: fd }).then(function (r) { if (!r.ok) throw new Error('upload'); }); };
-    var chain = up(pth); if (idx) chain = chain.then(function () { return up(idx); });
-    chain.then(function () {
-      var fl = [{ name: pth.name, kind: 'rvcModel', dir: '' }]; if (idx) fl.push({ name: idx.name, kind: 'rvcIndex', dir: '' });
-      return api('/load_model', { slot: String(slot), isHalf: 'true', params: JSON.stringify({ voiceChangerType: 'RVC', slot: slot, isSampleMode: false, sampleId: '', files: fl, params: {} }) });
-    }).then(load).then(function () { say('vmsg', 'Голос добавлен', 'ok'); }).catch(function () { say('vmsg', 'Не удалось добавить голос. Проверь, что это модель RVC.', 'err'); }).then(function () { busy = false; });
+  // ---------- добавление голосов: окно, куда можно кинуть папку ----------
+  var dlg = $('dlg'), working = false;
+  function openDlg() { dlg.hidden = false; }
+  function closeDlg() { if (working) return; dlg.hidden = true; dlg.classList.remove('busy'); $('plist').innerHTML = ''; say('pmsg', ''); }
+  $('dlgx').addEventListener('click', closeDlg); $('pdone').addEventListener('click', closeDlg);
+  dlg.addEventListener('mousedown', function (e) { if (e.target === dlg) closeDlg(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !dlg.hidden) closeDlg(); });
+  $('drop').addEventListener('click', function () { $('dir').click(); });
+  $('drop').addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('dir').click(); } });
+  $('pfiles').addEventListener('click', function () { $('file').click(); });
+  $('voices').addEventListener('click', function (e) { if (e.target.closest('#addv')) openDlg(); });
+
+  // обход папки из перетаскивания (webkitGetAsEntry)
+  function walk(entry, path, out) {
+    return new Promise(function (resolve) {
+      if (entry.isFile) { entry.file(function (f) { out.push({ path: path + f.name, name: f.name, file: f }); resolve(); }, function () { resolve(); }); return; }
+      var rd = entry.createReader(), all = [];
+      (function next() { rd.readEntries(function (b) { if (!b.length) { Promise.all(all.map(function (en) { return walk(en, path + entry.name + '/', out); })).then(resolve); return; } all = all.concat([].slice.call(b)); next(); }, function () { resolve(); }); })();
+    });
+  }
+  function filesFromDrop(dt) {
+    var items = [].slice.call(dt.items || []).map(function (it) { return it.webkitGetAsEntry && it.webkitGetAsEntry(); }).filter(Boolean), out = [];
+    if (!items.length) return Promise.resolve([].slice.call(dt.files || []).map(function (f) { return { path: f.name, name: f.name, file: f }; }));
+    return Promise.all(items.map(function (en) { return walk(en, '', out); })).then(function () { return out; });
+  }
+  function filesFromInput(inp) { return [].slice.call(inp.files || []).map(function (f) { return { path: f.webkitRelativePath || f.name, name: f.name, file: f }; }); }
+
+  var dragN = 0, hasFiles = function (e) { return e.dataTransfer && [].indexOf.call(e.dataTransfer.types || [], 'Files') >= 0; };
+  window.addEventListener('dragenter', function (e) { if (!hasFiles(e)) return; e.preventDefault(); dragN++; if (!working) openDlg(); });
+  window.addEventListener('dragleave', function (e) { if (!hasFiles(e)) return; dragN = Math.max(0, dragN - 1); $('drop').classList.remove('over'); });
+  window.addEventListener('dragover', function (e) { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; $('drop').classList.toggle('over', !!e.target.closest('#dlg')); });
+  window.addEventListener('drop', function (e) {
+    if (!hasFiles(e)) return; e.preventDefault(); dragN = 0; $('drop').classList.remove('over');
+    if (working) return; openDlg();
+    filesFromDrop(e.dataTransfer).then(addFiles);
   });
+  $('dir').addEventListener('change', function () { var l = filesFromInput($('dir')); $('dir').value = ''; openDlg(); addFiles(l); });
+  $('file').addEventListener('change', function () { var l = filesFromInput($('file')); $('file').value = ''; openDlg(); addFiles(l); });
+
+  function upload(f, onp) {
+    return new Promise(function (resolve, reject) {
+      var x = new XMLHttpRequest(), fd = new FormData(); fd.append('file', f); fd.append('filename', f.name);
+      x.open('POST', BASE + '/upload_file'); x.upload.onprogress = function (e) { if (e.lengthComputable) onp(e.loaded / e.total); };
+      x.onload = function () { x.status < 400 ? resolve() : reject(new Error('upload')); }; x.onerror = function () { reject(new Error('upload')); };
+      x.send(fd);
+    });
+  }
+  function names() { try { return JSON.parse(store.get('names')) || {}; } catch (e) { return {}; } }
+  function addFiles(list) {
+    if (working) return;
+    var g = VoicePack.group(list), existing = voicesOf(info || {}).map(function (s) { return VoicePack.norm(VoicePack.stem(s.name)); });
+    var free = ((info && info.modelSlots) || []).filter(function (s) { return s && !s.name; }).map(function (s) { return Number(s.slotIndex); });
+    if (!g.voices.length) { say('pmsg', 'В этой папке нет файла голоса (.pth). Кинь папку, где лежит модель.', 'err'); return; }
+    working = true; dlg.classList.add('busy'); say('pmsg', '');
+    var rows = g.voices.map(function (v) {
+      var li = document.createElement('li'); li.className = 'pi';
+      li.innerHTML = '<span class="t">' + esc(v.name) + '</span><span class="s">ждёт</span><span class="m">' + (v.index ? 'Модель и файл сходства (.index)' : 'Только модель, без .index (сходство работать не будет)') + '</span><span class="pb"><i></i></span>';
+      $('plist').appendChild(li); return li;
+    });
+    var added = 0, failed = 0, chain = Promise.resolve();
+    g.voices.forEach(function (v, n) {
+      chain = chain.then(function () {
+        var li = rows[n], st = li.querySelector('.s'), bar = li.querySelector('i'), fin = function (cls, txt) { li.classList.add(cls); st.textContent = txt; };
+        if (existing.indexOf(VoicePack.norm(VoicePack.stem(v.model.name))) >= 0) { fin('err', 'уже есть'); failed++; return; }
+        var slot = free.shift(); if (slot == null) { fin('err', 'нет места'); failed++; return; }
+        var total = v.model.file.size + (v.index ? v.index.file.size : 0), done = 0, tick = function (cur) { var p = Math.min(1, (done + cur) / (total || 1)); bar.style.width = Math.round(p * 100) + '%'; st.textContent = Math.round(p * 100) + '%'; };
+        st.textContent = '0%';
+        return upload(v.model.file, function (r) { tick(r * v.model.file.size); }).then(function () { done = v.model.file.size; if (v.index) return upload(v.index.file, function (r) { tick(r * v.index.file.size); }); }).then(function () {
+          st.textContent = 'подключаю…';
+          var fl = [{ name: v.model.name, kind: 'rvcModel', dir: '' }]; if (v.index) fl.push({ name: v.index.name, kind: 'rvcIndex', dir: '' });
+          return api('/load_model', { slot: String(slot), isHalf: 'true', params: JSON.stringify({ voiceChangerType: 'RVC', slot: slot, isSampleMode: false, sampleId: '', files: fl, params: {} }) });
+        }).then(function () { bar.style.width = '100%'; fin('ok', 'готово'); added++; var nm = names(); nm[VoicePack.stem(v.model.name)] = v.name; store.set('names', JSON.stringify(nm)); })
+          .catch(function () { fin('err', 'ошибка'); failed++; });
+      });
+    });
+    chain.then(function () { return load(); }).then(function () {
+      working = false;
+      var txt = added ? 'Добавлено голосов: ' + added + (failed ? ', не удалось: ' + failed : '') : 'Ничего не добавлено';
+      if (g.skipped.length) txt += '. ' + g.skipped.join('; ');
+      say('pmsg', txt, added && !failed ? 'ok' : (added ? '' : 'err'));
+    });
+  }
 
   load(); setInterval(poll, 1500);
 })();

@@ -7,7 +7,7 @@
   <div class="bar"><div class="logo">OV</div><b>Overvoice</b><small>нейроголос для стрима</small><span class="conn" id="conn"><i></i><span id="connT">Подключаюсь…</span></span></div>
   <div class="body">
     <div class="col">
-      <div class="card"><h2>Голос</h2><div class="voices" id="voices"></div><input type="file" id="file" accept=".pth,.index,.onnx" multiple hidden><p class="msg" id="vmsg"></p></div>
+      <div class="card"><h2>Голос</h2><div class="voices" id="voices"></div><input type="file" id="file" accept=".pth,.index,.onnx" multiple hidden><input type="file" id="dir" webkitdirectory multiple hidden><p class="msg" id="vmsg"></p></div>
       <div class="card"><h2>Тон и чистота</h2>
         <div class="stack">
           <label class="sl">Высота голоса <input type="range" id="pitch" min="-24" max="24" value="0"><b id="pitchv">0</b></label>
@@ -36,5 +36,18 @@
   </div>
   <div class="foot"><span>Создано на основе VCClient (w-okada, лицензия MIT). <a href="licenses.html" target="_blank">Лицензии</a></span><span>Overvoice 0.1</span></div>
 </div>
-<script src="../theme.js"></script><script src="nv.js"></script>
+<div class="dlg" id="dlg" hidden>
+  <div class="dlgbox" role="dialog" aria-modal="true" aria-label="Добавить голоса">
+    <div class="dlghead"><b>Добавить голоса</b><button type="button" class="x" id="dlgx" aria-label="Закрыть">✕</button></div>
+    <div class="drop" id="drop" tabindex="0" role="button">
+      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 10v5M9.8 12.2 12 10l2.2 2.2"/></svg>
+      <b>Кинь сюда папку с голосом</b>
+      <span>Можно сразу папку с несколькими голосами. Или нажми и выбери папку.</span>
+    </div>
+    <ul class="plist" id="plist"></ul>
+    <p class="msg" id="pmsg"></p>
+    <div class="dlgfoot"><button type="button" class="ghost" id="pfiles">Выбрать файлы по одному…</button><button type="button" class="ghost" id="pdone">Закрыть</button></div>
+  </div>
+</div>
+<script src="../theme.js"></script><script src="voicepack.js"></script><script src="nv.js"></script>
 </body></html>
