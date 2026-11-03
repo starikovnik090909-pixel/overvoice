@@ -4,8 +4,8 @@ const path = require('path');
 function main(ctx) {
   const { app, dir } = ctx;
   const file = path.join(dir, 'link_settings.json');
-  let url = 'http://localhost:3001';
-  try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); if (typeof j.url === 'string') url = j.url; } catch (e) { /* первый запуск */ }
+  let url = process.env.OVERVOICE_OVERDECK_URL || 'http://localhost:3001';   // Overdeck при запуске сам передаёт свой адрес
+  if (!process.env.OVERVOICE_OVERDECK_URL) { try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); if (typeof j.url === 'string') url = j.url; } catch (e) { /* первый запуск */ } }
   const clean = (u) => { u = String(u || '').trim().replace(/\/+$/, ''); if (!/^https?:\/\//i.test(u)) u = 'http://' + u; try { const p = new URL(u); if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(p.hostname)) return null; return p.origin; } catch (e) { return null; } };
   async function check() {
     const out = { connected: false, url, theme: null, themeName: '' };
