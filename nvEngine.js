@@ -152,24 +152,25 @@ let installer = async function realInstall() {
   if (!hasPip()) { const gp = path.join(ed, 'get-pip.py'); await dl(PIP_URL, gp, 'Скачиваю установщик библиотек'); setSt('working', 'Ставлю установщик библиотек…'); await runPy([gp, '--no-warn-script-location']); try { fs.unlinkSync(gp); } catch (e) { /* не критично */ } }
   // 3. torch (самое большое: видеокартная сборка около 3 ГБ). Размер видно по папке кэша pip.
   const hasTorch = () => fs.existsSync(path.join(ed, 'py', 'Lib', 'site-packages', 'torch', '__init__.py'));
-  const cache = path.join(ed, 'pipcache');
+  const cache = path.join(ed, 'pipcache'), tmp = path.join(ed, 'tmp'); fs.mkdirSync(tmp, { recursive: true });
+  const penv = { PIP_CACHE_DIR: cache, TMP: tmp, TEMP: tmp, TMPDIR: tmp };   // временные файлы pip — рядом с движком, а не на диске C:
   if (!hasTorch()) {
     const tag = cfg.variant === 'cuda' ? 'cu124' : 'cpu', wh = path.join(ed, 'wheels'); fs.mkdirSync(wh, { recursive: true });
     const files = ['torch-2.6.0%2B' + tag + '-cp312-cp312-win_amd64.whl', 'torchaudio-2.6.0%2B' + tag + '-cp312-cp312-win_amd64.whl'];
     const local = [];
     for (const f of files) { const name = decodeURIComponent(f), to = path.join(wh, name); await dl(v.index + '/' + f, to, 'Скачиваю ' + name.split('-')[0]); local.push(to); }
     setSt('working', 'Ставлю нейросетевую библиотеку (несколько минут)…');
-    await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', '--retries', '10', '--timeout', '60'].concat(local), null, { PIP_CACHE_DIR: cache });
+    await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', '--retries', '10', '--timeout', '60'].concat(local), null, penv);
     try { fs.rmSync(wh, { recursive: true, force: true }); } catch (e) { /* не критично */ }
   }
   for (let n = 1; ; n++) {   // библиотеки с PyPI: при обрыве связи повторяем (уже скачанное лежит в кэше pip)
     setSt('working', 'Ставлю остальные библиотеки…' + (n > 1 ? ' (попытка ' + n + ')' : ''));
     try {
-      await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', '--retries', '10', '--timeout', '60', '-r', path.join(codeDir(), 'requirements.txt')], (l) => { if (/^(Collecting|Downloading|Installing)/.test(l)) { st = { state: 'working', text: 'Ставлю библиотеки: ' + l.slice(0, 60) + (n > 1 ? ' (попытка ' + n + ')' : ''), pct: 0 }; onChange(); } }, { PIP_CACHE_DIR: cache });
+      await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', '--retries', '10', '--timeout', '60', '-r', path.join(codeDir(), 'requirements.txt')], (l) => { if (/^(Collecting|Downloading|Installing)/.test(l)) { st = { state: 'working', text: 'Ставлю библиотеки: ' + l.slice(0, 60) + (n > 1 ? ' (попытка ' + n + ')' : ''), pct: 0 }; onChange(); } }, penv);
       break;
-    } catch (e) { if (n >= 8) throw e; await new Promise((r) => setTimeout(r, 3000)); }
+    } catch (e) { if (/no space left|errno 28|недостаточно места/i.test(e.message)) throw new Error('Закончилось место на диске ' + path.parse(ed).root + ' (свободно ' + freeGb(ed).toFixed(1) + ' ГБ). Освободи место или перенеси программу на другой диск и нажми «Повторить».'); if (n >= 8) throw e; await new Promise((r) => setTimeout(r, 3000)); }
   }
-  try { fs.rmSync(cache, { recursive: true, force: true }); } catch (e) { /* не критично */ }
+  for (const d of [cache, tmp]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch (e) { /* не критично */ } }
   // 4. модели HuBERT и RMVPE
   for (const [src, dst] of ASSETS) {
     const to = path.join(assetsDir(), dst); if (fs.existsSync(to) && fs.statSync(to).size > 1000) continue;
