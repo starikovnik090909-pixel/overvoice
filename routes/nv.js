@@ -13,6 +13,10 @@ function main(ctx) {
   app.put('/api/nv/obs', (req, res) => res.json({ success: true, obs: obs.save(req.body) }));
   app.get('/api/nv/obs/inputs', async (req, res) => { try { res.json({ success: true, inputs: await obs.inputs() }); } catch (e) { res.json({ success: false, inputs: [], error: e.message }); } });
   app.post('/api/nv/obs/live', async (req, res) => { try { res.json(Object.assign({ success: true }, await obs.live(!!(req.body || {}).on))); } catch (e) { res.json({ success: false, error: e.message }); } });
+  const pack = require('../nvPack');
+  app.get('/api/nv/pack', async (req, res) => { try { res.json({ success: true, voices: await pack.list(), status: pack.status() }); } catch (e) { res.json({ success: false, voices: [], error: e.message, status: pack.status() }); } });
+  app.post('/api/nv/pack/install', (req, res) => { const names = Array.isArray((req.body || {}).names) ? req.body.names.map(String).slice(0, 50) : []; pack.install(names).catch(() => {}); setTimeout(() => res.json({ success: true, status: pack.status() }), 200); });
+  app.get('/api/nv/pack/status', (req, res) => res.json({ success: true, status: pack.status() }));
   app.get('/api/nv/drives', async (req, res) => res.json({ success: true, drives: await nv.drives() }));
   app.get('/api/nv/cable', async (req, res) => res.json(Object.assign({ success: true }, await nv.cableState())));
   app.post('/api/nv/cable/install', (req, res) => { nv.cableInstall(); setTimeout(() => res.json({ success: true }), 200); });
