@@ -34,6 +34,7 @@ function main(ctx) {
   app.get('/api/nv/voices', async (req, res) => { try { res.json({ success: true, voices: await nv.voices() }); } catch (e) { res.json({ success: false, voices: [], error: e.message }); } });
   // для Overdeck и других программ: включить голос слота (запускает обработку звука) и остановить её
   app.post('/api/nv/voice', async (req, res) => { try { const slot = Number((req.body || {}).slot); if (!Number.isInteger(slot) || slot < 0 || slot > 99) throw new Error('Неверный номер голоса'); await nv.useVoice(slot); ok(res); } catch (e) { res.status(400).json({ success: false, error: e.message }); } });
+  app.post('/api/nv/select', (req, res) => { try { res.json({ success: true, select: nv.select(String((req.body || {}).name || '')) }); } catch (e) { res.status(400).json({ success: false, error: e.message }); } });
   app.post('/api/nv/release', async (req, res) => { await nv.release(); ok(res); });
   app.all('/api/nv/engine/*', (req, res) => nv.proxy(req, res, req.originalUrl.replace(/^\/api\/nv\/engine/, '') || '/'));
   return {};

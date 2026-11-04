@@ -57,6 +57,12 @@ const { Readable } = require('stream');
   nv.saveVoiceSettings('Маша', { pitch: -3, idx: 70, gate: 0, vol: 120 });
   ok(await nv.applyActive() === true, 'настройки активного голоса применены');
   ok(upd.tran === '-3' && upd.indexRatio === '0.7' && upd.silentThreshold === '0' && upd.serverOutputAudioGain === '1.2' && upd.modelSlotIndex !== undefined, 'в движок ушли высота, сходство, шум, громкость и слот');
+  // «нажал на голос — он работает»
+  const waitSel = async () => { for (let i = 0; i < 100 && nv.selState().phase === 'working'; i++) await new Promise((r) => setTimeout(r, 50)); return nv.selState(); };
+  nv.select('Вася'); let ss = await waitSel(); ok(ss.phase === 'done' && ss.name === 'Вася' && nv.getActive() === 'Вася', 'выбор голоса: готово, запомнен');
+  ok(upd.serverAudioStated === '1' && upd.passThrough === '0', 'выбор голоса включает звук');
+  nv.select('Оля'); ss = await waitSel(); ok(ss.phase === 'error' && /свободных/.test(ss.error), 'нет места: понятная ошибка');
+  let nn = false; try { nv.select('../x'); } catch (e) { nn = true; } ok(nn, 'выбор несуществующего голоса отклонён');
   eng.close(); fs.rmSync(tmp, { recursive: true, force: true });
   console.log('✓ library: ' + n + ' проверок'); process.exit(0);
 })().catch((e) => { console.error('✗', e.message); process.exit(1); });

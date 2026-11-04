@@ -277,6 +277,12 @@ function uploadToEngine(file) {
 }
 let syncing = false, lastSync = { at: 0, error: '', failed: 0 }, retries = 0;
 /** Подключить к движку голоса из библиотеки, которых там ещё нет. */
+async function loadOne(v, slot) {
+  const dir = path.join(voicesDir(), v.name);
+  await uploadToEngine(path.join(dir, v.model)); if (v.index) await uploadToEngine(path.join(dir, v.index));
+  const fl = [{ name: v.model, kind: 'rvcModel', dir: '' }]; if (v.index) fl.push({ name: v.index, kind: 'rvcIndex', dir: '' });
+  await req('POST', '/load_model', { slot: String(slot), isHalf: 'true', params: JSON.stringify({ voiceChangerType: 'RVC', slot, isSampleMode: false, sampleId: '', files: fl, params: {} }) }, 180000);
+}
 async function syncLibrary() {
   if (syncing) return { busy: true, added: 0, full: 0, failed: 0, running: true };
   syncing = true;
@@ -290,12 +296,7 @@ async function syncLibrary() {
     for (const v of libraryList()) {
       if (have.has(normOf(stemOf(v.model)))) continue;
       const slot = free.shift(); if (slot == null) { res.full++; continue; }
-      try {
-        const dir = path.join(voicesDir(), v.name);
-        await uploadToEngine(path.join(dir, v.model)); if (v.index) await uploadToEngine(path.join(dir, v.index));
-        const fl = [{ name: v.model, kind: 'rvcModel', dir: '' }]; if (v.index) fl.push({ name: v.index, kind: 'rvcIndex', dir: '' });
-        await req('POST', '/load_model', { slot: String(slot), isHalf: 'true', params: JSON.stringify({ voiceChangerType: 'RVC', slot, isSampleMode: false, sampleId: '', files: fl, params: {} }) }, 180000);
-        res.added++; have.add(normOf(stemOf(v.model)));
+      try { await loadOne(v, slot); res.added++; have.add(normOf(stemOf(v.model)));
       } catch (e) { res.failed++; res.error = v.name + ': ' + e.message; }
     }
     if (res.added) { try { await voices(); } catch (e) { /* кэш обновится позже */ } }
@@ -327,7 +328,38 @@ const syncAndApply = () => syncLibrary().then(() => applyActive()).catch(() => {
 async function libraryState() {
   let slots = null; try { if (await alive()) slots = ((await info()).modelSlots || []).filter((s) => s && s.name); } catch (e) { slots = null; }
   const loaded = slots && new Set(slots.map((s) => normOf(stemOf(s.name))));
-  return { running: !!slots, syncError: lastSync.error, voices: libraryList().map((v) => ({ name: v.name, model: v.model, hasIndex: !!v.index, hasSample: !!v.sample, settings: v.settings, loaded: loaded ? loaded.has(normOf(stemOf(v.model))) : false })) };
+  return { running: !!slots, syncError: lastSync.error, select: selState(), voices: libraryList().map((v) => ({ name: v.name, model: v.model, hasIndex: !!v.index, hasSample: !!v.sample, settings: v.settings, loaded: loaded ? loaded.has(normOf(stemOf(v.model))) : false })) };
+}
+
+// ---------- «нажал на голос — он работает»: запуск движка, загрузка голоса, его настройки и включение звука за один шаг ----------
+let selS = { name: '', phase: 'idle', text: '', error: '' }, selTok = 0;
+const selState = () => ({ ...selS });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function selectRun(tok, v) {
+  const say = (t) => { if (tok === selTok) selS.text = t; };
+  if (!(await alive())) { say('Запускаю движок…'); await start(); if (!(await alive())) throw new Error(st.text || 'Движок не запустился'); }
+  for (let i = 0; i < 720 && syncing && tok === selTok; i++) await sleep(500);
+  if (tok !== selTok) return;
+  const slotOf = async () => { const m = ((await info()).modelSlots || []).filter((x) => x && x.name).find((x) => normOf(stemOf(x.name)) === normOf(stemOf(v.model))); return m ? Number(m.slotIndex) : -1; };
+  if ((await slotOf()) < 0) {
+    say('Загружаю голос в движок (до минуты)…'); syncing = true;
+    try {
+      if ((await slotOf()) < 0) { const free = ((await info()).modelSlots || []).filter((x) => x && !x.name).map((x) => Number(x.slotIndex))[0]; if (free == null) throw new Error('В движке нет свободных мест под голоса'); await loadOne(v, free); }
+    } finally { syncing = false; }
+    if ((await slotOf()) < 0) throw new Error('Движок принял файлы, но голос не появился. Проверь, что это модель RVC (.pth или .onnx)');
+  }
+  if (tok !== selTok) return;
+  say('Включаю голос…'); setActive(v.name);
+  if (!(await applyVoiceSettings(v.name))) throw new Error('Не удалось выбрать голос в движке');
+  await setSetting('passThrough', 0);
+  const j = await info(); if (Number(j.serverAudioStated) !== 1) { await setSetting('enableServerAudio', 1); await setSetting('serverAudioStated', 1); }
+  if (tok === selTok) selS = { name: v.name, phase: 'done', text: 'Голос «' + v.name + '» работает', error: '' };
+}
+function select(name) {
+  const v = libraryList().find((x) => x.name === name); if (!v) throw new Error('Такого голоса нет');
+  const tok = ++selTok; selS = { name: v.name, phase: 'working', text: 'Готовлю голос…', error: '' };
+  selectRun(tok, v).catch((e) => { if (tok === selTok) selS = { name: v.name, phase: 'error', text: '', error: String(e.message || e) }; });
+  return selState();
 }
 
 // ---------- управление голосом (Overdeck и другие программы) ----------
@@ -411,4 +443,4 @@ async function vcInstall() {
   } catch (e) { setSt('error', 'Не удалось установить Visual C++: ' + e.message, { fix: 'vc' }); }
   return state();
 }
-module.exports = { watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+module.exports = { select, selState, watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
