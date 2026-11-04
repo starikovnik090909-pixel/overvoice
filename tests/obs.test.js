@@ -3,7 +3,7 @@ const path = require('path'), assert = require('assert'), os = require('os'), fs
 let WS; try { WS = require('ws'); } catch (e) { try { WS = require(path.join(__dirname, '../../twitch-overlay-v2/node_modules/ws')); } catch (e2) { console.log('obs test: ws не найден, пропуск'); process.exit(0); } }
 const obs = require('../obsLink');
 obs.load(path.join(os.tmpdir(), 'obs_link_test_' + process.pid + '.json'));
-const calls = []; const salt = 'SALT', challenge = 'CHAL', pass = 'secret';
+const calls = [], made = []; const salt = 'SALT', challenge = 'CHAL', pass = 'secret';
 const expect = obs._sha(obs._sha(pass + salt) + challenge);
 const srv = new WS.Server({ port: 0, host: '127.0.0.1' }, async () => {
   const port = srv.address().port;
@@ -13,6 +13,11 @@ const srv = new WS.Server({ port: 0, host: '127.0.0.1' }, async () => {
     const list = await obs.inputs(); assert.deepStrictEqual(list.map((i) => i.name), ['Mic', 'Cable']);
     await obs.live(true); await obs.live(false);
     assert.deepStrictEqual(calls, [['Mic', true], ['Cable', false], ['Mic', false], ['Cable', true]]);
+    obs.save({ main: '', cable: '' }); const cs = await obs.connectSource();
+    assert.strictEqual(cs.cable, 'Овервойс (кабель)'); assert.strictEqual(cs.main, 'Mic');
+    assert.deepStrictEqual(made, ['Овервойс (кабель):wasapi_input_capture:Сцена', 'dev=B', 'mon=OBS_MONITORING_TYPE_NONE']);
+    assert.deepStrictEqual(obs.get().cable, 'Овервойс (кабель)'); assert.strictEqual(obs.get().enabled, true);
+    obs.save({ main: 'Mic', cable: 'Cable' });
     obs.save({ password: 'bad' }); await obs.live(true).then(() => assert.fail('нужна ошибка'), () => {});
     obs.save({ enabled: false, password: pass }); assert.deepStrictEqual(await obs.live(true), { skipped: true });
     obs.save({ enabled: true, port: 1 }); await obs.inputs().then(() => assert.fail('нужна ошибка'), (e) => assert.ok(/OBS/.test(e.message)));
@@ -28,6 +33,14 @@ srv.on('connection', (ws) => {
     else if (m.op === 6) {
       const d = m.d.requestData; let rd = {};
       if (m.d.requestType === 'GetInputList') rd = { inputs: [{ inputName: 'Mic', inputKind: 'wasapi_input_capture' }, { inputName: 'Cable', inputKind: 'wasapi_input_capture' }, { inputName: 'Img', inputKind: 'image_source' }] };
+      else if (m.d.requestType === 'GetInputKindList') rd = { inputKinds: ['image_source', 'wasapi_input_capture'] };
+      else if (m.d.requestType === 'GetCurrentProgramScene') rd = { sceneName: 'Сцена' };
+      else if (m.d.requestType === 'GetInputPropertiesListPropertyItems') rd = { propertyItems: [{ itemName: 'Микрофон (Realtek)', itemValue: 'A' }, { itemName: 'CABLE Output (VB-Audio Virtual Cable)', itemValue: 'B' }] };
+      else if (m.d.requestType === 'GetSpecialInputs') rd = { mic1: 'Mic' };
+      else if (m.d.requestType === 'CreateInput') { made.push(d.inputName + ':' + d.inputKind + ':' + d.sceneName); }
+      else if (m.d.requestType === 'SetInputSettings') { made.push('dev=' + d.inputSettings.device_id); }
+      else if (m.d.requestType === 'SetInputMute' && d.inputName.includes('Овервойс')) { /* создание источника */ }
+      else if (m.d.requestType === 'SetInputAudioMonitorType') { made.push('mon=' + d.monitorType); }
       else calls.push([d.inputName, d.inputMuted]);
       ws.send(JSON.stringify({ op: 7, d: { requestId: m.d.requestId, requestStatus: { result: true, code: 100 }, responseData: rd } }));
     }

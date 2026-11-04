@@ -12,6 +12,7 @@ function main(ctx) {
   app.get('/api/nv/obs', (req, res) => res.json({ success: true, obs: obs.get() }));
   app.put('/api/nv/obs', (req, res) => res.json({ success: true, obs: obs.save(req.body) }));
   app.get('/api/nv/obs/inputs', async (req, res) => { try { res.json({ success: true, inputs: await obs.inputs() }); } catch (e) { res.json({ success: false, inputs: [], error: e.message }); } });
+  app.post('/api/nv/obs/connect', async (req, res) => { try { res.json(Object.assign({ success: true }, await obs.connectSource())); } catch (e) { res.json({ success: false, error: e.message }); } });
   app.post('/api/nv/obs/live', async (req, res) => { try { res.json(Object.assign({ success: true }, await obs.live(!!(req.body || {}).on))); } catch (e) { res.json({ success: false, error: e.message }); } });
   const pack = require('../nvPack');
   app.get('/api/nv/pack', async (req, res) => { try { res.json({ success: true, voices: await pack.list(), status: pack.status() }); } catch (e) { res.json({ success: false, voices: [], error: e.message, status: pack.status() }); } });
