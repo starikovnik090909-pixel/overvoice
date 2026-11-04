@@ -3,6 +3,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const os = require('os');
 const http = require('http');
 const https = require('https');
@@ -12,6 +13,8 @@ const PY_URL = 'https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd
 const PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
 const HF = 'https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/';
 const ASSETS = [['hubert_base/config.json', 'hubert_base/config.json'], ['hubert_base/preprocessor_config.json', 'hubert_base/preprocessor_config.json'], ['hubert_base/pytorch_model.bin', 'hubert_base/pytorch_model.bin'], ['rmvpe.pt', 'rmvpe/rmvpe.pt']];
+// Зеркало тяжёлых библиотек на GitHub (куски до 90 МБ + manifest.json с контрольными суммами): GitHub доступен всем, сайт PyTorch — нет.
+const MIRROR = () => process.env.OV_MIRROR || 'https://raw.githubusercontent.com/starikovnik090909-pixel/overvoice-libs/main/';
 const VARIANTS = {
   cuda: { gb: 7, label: 'видеокарта NVIDIA (CUDA)', index: 'https://download.pytorch.org/whl/cu124', dl: 3.0 },
   dml: { gb: 3, label: 'без NVIDIA: процессор (медленно)', index: 'https://download.pytorch.org/whl/cpu', dl: 0.3 },
@@ -105,6 +108,29 @@ async function downloadRetry(url, dest, onProg, onRetry, tries, delay) {
     }
   }
 }
+const sha256File = (f) => new Promise((resolve, reject) => { const h = crypto.createHash('sha256'); fs.createReadStream(f).on('data', (c) => h.update(c)).on('error', reject).on('end', () => resolve(h.digest('hex'))); });
+/** Скачать колесо из зеркала: куски → склейка → проверка sha256. Бросает ошибку, если зеркала/файла нет или сумма не сошлась. */
+async function mirrorFetch(group, name, dest, onProg, onRetry) {
+  const base = MIRROR(), mf = path.join(path.dirname(dest), 'manifest.json');
+  try { fs.unlinkSync(mf); } catch (e) { /* нет */ }
+  await downloadRetry(base + 'manifest.json', mf, () => {}, null, 4, 1500);
+  const files = JSON.parse(fs.readFileSync(mf, 'utf8')).files || {}; const m = files[name];
+  if (!m || !m.parts || !m.parts.length) throw new Error('В зеркале нет ' + name);
+  const total = m.size; let done = 0; const dir = path.dirname(dest);
+  const names = [];
+  for (const part of m.parts) {
+    const to = path.join(dir, part.name); names.push(to);
+    let ok = false; try { ok = fs.statSync(to).size === part.size; } catch (e) { ok = false; }
+    if (!ok) await downloadRetry(base + group + '/' + part.name, to, (got) => onProg(done + got, total), onRetry, 30, 2000);
+    done += part.size; onProg(done, total);
+  }
+  const ws = fs.createWriteStream(dest);
+  for (const to of names) await new Promise((res, rej) => { const rs = fs.createReadStream(to); rs.on('error', rej); ws.on('error', rej); rs.on('end', res); rs.pipe(ws, { end: false }); });
+  await new Promise((res) => ws.end(res));
+  if ((await sha256File(dest)) !== m.sha256) { try { fs.unlinkSync(dest); } catch (e) { /* нет */ } for (const to of names) { try { fs.unlinkSync(to); } catch (e) { /* нет */ } } throw new Error('Контрольная сумма ' + name + ' не сошлась'); }
+  for (const to of names) { try { fs.unlinkSync(to); } catch (e) { /* нет */ } }
+  return dest;
+}
 function unpack(zip, dir) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(dir, { recursive: true });
@@ -163,7 +189,17 @@ let installer = async function realInstall() {
     const tag = cfg.variant === 'cuda' ? 'cu124' : 'cpu', wh = path.join(ed, 'wheels'); fs.mkdirSync(wh, { recursive: true });
     const files = ['torch-2.6.0%2B' + tag + '-cp312-cp312-win_amd64.whl', 'torchaudio-2.6.0%2B' + tag + '-cp312-cp312-win_amd64.whl'];
     const local = [];
-    for (const f of files) { const name = decodeURIComponent(f), to = path.join(wh, name); await dl(v.index + '/' + f, to, 'Скачиваю ' + name.split('-')[0]); local.push(to); }
+    for (const f of files) {
+      const name = decodeURIComponent(f), to = path.join(wh, name), label = 'Скачиваю ' + name.split('-')[0];
+      if (!fs.existsSync(to) || fs.statSync(to).size < 1000000) {
+        let got = false;
+        if (cfg.variant === 'cuda') {   // сначала зеркало на GitHub, при любой неудаче — сайт PyTorch
+          try { await mirrorFetch('torch-2.6.0-cu124', name, to, (g, t) => { const now = Date.now(); if (now - last < 700) return; last = now; prog(label + ' (GitHub): ' + (g / 1048576).toFixed(0) + ' из ' + (t / 1048576).toFixed(0) + ' МБ', t ? Math.round((g / t) * 100) : 0); }, (n) => prog(label + ': связь оборвалась, пробую снова (' + n + ')…', 0)); got = true; } catch (e) { setSt('working', 'Зеркало GitHub недоступно, качаю с сайта PyTorch…'); }
+        }
+        if (!got) await dl(v.index + '/' + f, to, label);
+      }
+      local.push(to);
+    }
     setSt('working', 'Ставлю нейросетевую библиотеку (несколько минут)…');
     await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', '--retries', '10', '--timeout', '60'].concat(local), null, penv);
     try { fs.rmSync(wh, { recursive: true, force: true }); } catch (e) { /* не критично */ }
@@ -491,4 +527,4 @@ async function vcInstall() {
   return state();
 }
 const _setInstaller = (f) => { installer = f; };
-module.exports = { downloadRetry, _setInstaller, select, selState, watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+module.exports = { mirrorFetch, downloadRetry, _setInstaller, select, selState, watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
