@@ -49,6 +49,18 @@ const nv = require('../nvEngine');
   ok((await resp.json()).tran === 7, 'пропуск запроса с формой');
   ok((await (await fetch('http://127.0.0.1:' + ps.address().port + '/api/nv/engine/info')).json()).modelSlots.length === 3, 'пропуск GET');
   ps.close(); nv.stop(); await new Promise((r) => setTimeout(r, 300)); ok(!nv.state().status.running, 'движок остановлен');
+  // обрывы связи при загрузке: докачивается с того же места
+  const big = Buffer.alloc(3000000, 7); let hits = 0;
+  const flaky = http.createServer((q, r) => {
+    hits++; const m = /bytes=(\d+)-/.exec(q.headers.range || ''); const from = m ? Number(m[1]) : 0, rest = big.subarray(from);
+    r.writeHead(m ? 206 : 200, { 'Content-Length': rest.length });
+    if (hits <= 2) { r.write(rest.subarray(0, 800000)); setTimeout(() => r.destroy(), 30); } else r.end(rest);
+  });
+  await new Promise((r) => flaky.listen(0, '127.0.0.1', r));
+  const out = path.join(tmp, 'big.bin'); let retried = 0;
+  await nv.downloadRetry('http://127.0.0.1:' + flaky.address().port + '/big', out, () => {}, () => { retried++; }, 10, 10);
+  ok(fs.statSync(out).size === big.length && retried >= 1 && hits >= 3 && fs.readFileSync(out).equals(big), 'загрузка пережила обрывы связи (' + retried + ' повтора) и совпала байт в байт');
+  flaky.close();
   srv.close(); fs.rmSync(tmp, { recursive: true, force: true });
   console.log('✓ nv: ' + n + ' проверок'); process.exit(0);
 })().catch((e) => { console.error('✗', e.message); process.exit(1); });

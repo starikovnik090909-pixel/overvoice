@@ -95,6 +95,16 @@ function download(url, dest, onProg, redirects) {
     req.on('error', reject); req.setTimeout(30000, () => req.destroy(new Error('Нет ответа от сервера загрузки')));
   });
 }
+/** Загрузка с повторами: при обрыве докачивает с того же места (часть файла лежит в .part). */
+async function downloadRetry(url, dest, onProg, onRetry, tries, delay) {
+  const max = tries || 60;
+  for (let n = 1; ; n++) {
+    try { return await download(url, dest, (got, total) => onProg(got, total, n)); } catch (e) {
+      if (n >= max) throw new Error('Связь с сервером загрузки не держится: ' + e.message + '. Проверь интернет или VPN и нажми «Повторить»: докачается с того же места.');
+      if (onRetry) onRetry(n); await new Promise((r) => setTimeout(r, delay == null ? 3000 : delay));
+    }
+  }
+}
 function unpack(zip, dir) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(dir, { recursive: true });
@@ -129,7 +139,8 @@ let installer = async function realInstall() {
   if (!fs.existsSync(path.join(codeDir(), 'ovengine', '__init__.py'))) throw new Error('В папке программы нет кода движка (папка engine). Обнови Овервойс.');
   if (freeGb(ed) < v.gb) throw new Error('Мало места на диске: нужно около ' + v.gb + ' ГБ свободно');
   const prog = (text, pct) => { st = { state: 'downloading', text, pct: pct || 0 }; onChange(); };
-  let last = 0; const dl = (url, dest, label) => download(url, dest, (got, total) => { const now = Date.now(); if (now - last < 700) return; last = now; prog(label + ': ' + (got / 1048576).toFixed(0) + (total ? ' из ' + (total / 1048576).toFixed(0) : '') + ' МБ', total ? Math.round((got / total) * 100) : 0); });
+  let last = 0;
+  const dl = (url, dest, label) => downloadRetry(url, dest, (got, total, n) => { const now = Date.now(); if (now - last < 700) return; last = now; prog(label + ': ' + (got / 1048576).toFixed(0) + (total ? ' из ' + (total / 1048576).toFixed(0) : '') + ' МБ' + (n > 1 ? ' (докачка, попытка ' + n + ')' : ''), total ? Math.round((got / total) * 100) : 0); }, (n) => prog(label + ': связь оборвалась, пробую снова (' + n + ')…', 0));
   // 1. Python
   if (!fs.existsSync(pyExe())) {
     const zip = path.join(ed, 'python-embed.zip'); await dl(PY_URL, zip, 'Скачиваю Python');
@@ -143,11 +154,16 @@ let installer = async function realInstall() {
   const hasTorch = () => fs.existsSync(path.join(ed, 'py', 'Lib', 'site-packages', 'torch', '__init__.py'));
   const cache = path.join(ed, 'pipcache');
   if (!hasTorch()) {
-    const t = setInterval(() => { const g = dirSize(cache) / 1073741824; st = { state: 'downloading', text: 'Скачиваю нейросетевую библиотеку: ' + g.toFixed(2) + ' из ~' + v.dl.toFixed(1) + ' ГБ (один раз)', pct: Math.min(99, Math.round((g / v.dl) * 100)) }; onChange(); }, 1500);
-    try { await runPy(['-m', 'pip', 'install', '--no-warn-script-location', 'torch==2.6.0', 'torchaudio==2.6.0', '--index-url', v.index], null, { PIP_CACHE_DIR: cache }); } finally { clearInterval(t); }
+    const tag = cfg.variant === 'cuda' ? 'cu124' : 'cpu', wh = path.join(ed, 'wheels'); fs.mkdirSync(wh, { recursive: true });
+    const files = ['torch-2.6.0%2B' + tag + '-cp312-cp312-win_amd64.whl', 'torchaudio-2.6.0%2B' + tag + '-cp312-cp312-win_amd64.whl'];
+    const local = [];
+    for (const f of files) { const name = decodeURIComponent(f), to = path.join(wh, name); await dl(v.index + '/' + f, to, 'Скачиваю ' + name.split('-')[0]); local.push(to); }
+    setSt('working', 'Ставлю нейросетевую библиотеку (несколько минут)…');
+    await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--retries', '10', '--timeout', '60'].concat(local), null, { PIP_CACHE_DIR: cache });
+    try { fs.rmSync(wh, { recursive: true, force: true }); } catch (e) { /* не критично */ }
   }
   setSt('working', 'Ставлю остальные библиотеки…');
-  await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '-r', path.join(codeDir(), 'requirements.txt')], (l) => { if (/^(Collecting|Downloading|Installing)/.test(l)) { st = { state: 'working', text: 'Ставлю библиотеки: ' + l.slice(0, 60), pct: 0 }; onChange(); } }, { PIP_CACHE_DIR: cache });
+  await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--retries', '10', '--timeout', '60', '-r', path.join(codeDir(), 'requirements.txt')], (l) => { if (/^(Collecting|Downloading|Installing)/.test(l)) { st = { state: 'working', text: 'Ставлю библиотеки: ' + l.slice(0, 60), pct: 0 }; onChange(); } }, { PIP_CACHE_DIR: cache });
   try { fs.rmSync(cache, { recursive: true, force: true }); } catch (e) { /* не критично */ }
   // 4. модели HuBERT и RMVPE
   for (const [src, dst] of ASSETS) {
@@ -464,4 +480,4 @@ async function vcInstall() {
   return state();
 }
 const _setInstaller = (f) => { installer = f; };
-module.exports = { _setInstaller, select, selState, watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+module.exports = { downloadRetry, _setInstaller, select, selState, watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
