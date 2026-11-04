@@ -22,10 +22,12 @@ const { Readable } = require('stream');
 
   // поддельный движок
   const slots = [0, 1, 2].map((i) => ({ slotIndex: i, voiceChangerType: i ? null : 'RVC', name: i ? '' : 'Диктор' })); const got = {};
+  const upd = {};
   const eng = http.createServer((q, r) => {
     const chunks = []; q.on('data', (c) => chunks.push(c)); q.on('end', () => {
       const body = Buffer.concat(chunks);
       if (q.url === '/upload_file') { const m = /name="file"; filename="([^"]+)"\r\n.*?\r\n\r\n/s.exec(body.toString('latin1')); const head = m[0].length, start = body.toString('latin1').indexOf(m[0]) + head; got[Buffer.from(m[1], 'latin1').toString('utf8')] = body.length - start - ('\r\n--' + /boundary=(.+)/.exec(q.headers['content-type'])[1] + '--\r\n').length; }
+      if (q.url === '/update_settings') { const f = new URLSearchParams(body.toString()); upd[f.get('key')] = f.get('val'); }
       if (q.url === '/load_model') { const p = JSON.parse(new URLSearchParams(body.toString()).get('params')); const s = slots[p.slot]; s.name = p.files[0].name; s.voiceChangerType = 'RVC'; }
       r.setHeader('Content-Type', 'application/json'); r.end(JSON.stringify({ modelSlots: slots, modelSlotIndex: 0 }));
     });
@@ -48,6 +50,13 @@ const { Readable } = require('stream');
   ok(nv.libraryList().find((v) => v.name === 'Маша').settings.pitch === 24, 'настройки сохраняются в файл');
   let nof = false; try { nv.saveVoiceSettings('Нет', {}); } catch (e) { nof = true; } ok(nof, 'настройки несуществующего голоса отклонены');
   ok((await nv.libraryState()).voices.find((v) => v.name === 'Маша').hasSample === true, 'в состоянии есть отметка примера');
+  // последний выбранный голос и его настройки после перезапуска
+  ok(nv.getActive() === '', 'активного голоса сначала нет');
+  nv.setActive('Маша'); ok(nv.getActive() === 'Маша', 'активный голос запоминается');
+  let nb = false; try { nv.setActive('../x'); } catch (e) { nb = true; } ok(nb && nv.getActive() === 'Маша', 'чужое имя активным не станет');
+  nv.saveVoiceSettings('Маша', { pitch: -3, idx: 70, gate: 0, vol: 120 });
+  ok(await nv.applyActive() === true, 'настройки активного голоса применены');
+  ok(upd.tran === '-3' && upd.indexRatio === '0.7' && upd.silentThreshold === '0' && upd.serverOutputAudioGain === '1.2' && upd.modelSlotIndex !== undefined, 'в движок ушли высота, сходство, шум, громкость и слот');
   eng.close(); fs.rmSync(tmp, { recursive: true, force: true });
   console.log('✓ library: ' + n + ' проверок'); process.exit(0);
 })().catch((e) => { console.error('✗', e.message); process.exit(1); });

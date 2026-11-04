@@ -175,7 +175,7 @@ async function alive() { try { await info(); return true; } catch (e) { return f
 
 async function start() {
   if (child) return state();
-  if (await alive()) { setSt('running', 'Движок уже запущен'); syncLibrary().catch(() => {}); return state(); }
+  if (await alive()) { setSt('running', 'Движок уже запущен'); syncAndApply(); return state(); }
   const exe = findExe(); if (!exe) { setSt('error', 'Движок не установлен'); return state(); }
   if (win && !fs.existsSync(path.join(path.dirname(exe), 'python310.dll')) && walk(path.dirname(exe), 2, (n) => /^python3\d+\.dll$/i.test(n)) === null) { setSt('error', 'В папке движка нет python310.dll: файл не распаковался или его удалил антивирус. Нажми «Переустановить движок».', { fix: 'reinstall' }); return state(); }
   log = []; setSt('starting', 'Запускаю движок (в первый раз до нескольких минут)…');
@@ -186,7 +186,7 @@ async function start() {
   child.stdout.on('data', keep); child.stderr.on('data', keep);
   child.on('exit', (code) => { child = null; if (st.state === 'running' || st.state === 'starting') { const dll = log.some((l) => /python\d*\.dll|LoadLibrary/i.test(l)); setSt(dll ? 'error' : 'ready', dll ? 'Не загрузился python310.dll: чаще всего не хватает Visual C++ (его можно поставить кнопкой ниже) или антивирус заблокировал файлы движка (добавь папку в исключения или переустанови движок).' : (code ? 'Движок остановился (код ' + code + ')' : 'Движок остановлен'), dll ? { fix: 'vc' } : {}); } });
   child.on('error', (e) => { child = null; setSt('error', 'Не удалось запустить: ' + e.message); });
-  for (let i = 0; i < 240 && child; i++) { if (await alive()) { setSt('running', 'Движок работает'); syncLibrary().catch(() => {}); return state(); } await new Promise((r) => setTimeout(r, 1000)); }
+  for (let i = 0; i < 240 && child; i++) { if (await alive()) { setSt('running', 'Движок работает'); syncAndApply(); return state(); } await new Promise((r) => setTimeout(r, 1000)); }
   if (child) { stop(); setSt('error', 'Движок не запустился за 4 минуты. Проверь журнал ниже.'); }
   return state();
 }
@@ -283,6 +283,27 @@ async function syncLibrary() {
   } finally { syncing = false; }
   return res;
 }
+// ---------- последний выбранный голос: после перезапуска движка его сохранённые настройки применяются сами ----------
+const activeFile = () => path.join(voicesDir(), '_active.json');
+function getActive() { try { const n = JSON.parse(fs.readFileSync(activeFile(), 'utf8')).name; return okName(n) ? n : ''; } catch (e) { return ''; } }
+function setActive(name) {
+  if (name !== '' && (!okName(name) || !fs.existsSync(path.join(voicesDir(), name)))) throw new Error('Такого голоса нет');
+  fs.mkdirSync(voicesDir(), { recursive: true }); fs.writeFileSync(activeFile(), JSON.stringify({ name })); return name;
+}
+const gateVal = (g) => (Number(g) === 0 ? 0 : Math.pow(10, -5 + Number(g) / 50));
+/** Выбрать голос в движке и поставить его сохранённые настройки (высота, сходство, шум, громкость). */
+async function applyVoiceSettings(name) {
+  const hit = (await voices()).find((v) => v.name === name), lv = libraryList().find((x) => x.name === name);
+  if (!hit || !lv) return false;
+  const s = voiceSettings(name);
+  await setSetting('modelSlotIndex', hit.slot); await setSetting('tran', s.pitch);
+  if (lv.index) await setSetting('indexRatio', s.idx / 100);
+  await setSetting('silentThreshold', gateVal(s.gate)); await setSetting('serverOutputAudioGain', s.vol / 100);
+  return true;
+}
+async function applyActive() { const n = getActive(); if (!n) return false; try { return await applyVoiceSettings(n); } catch (e) { return false; } }
+const syncAndApply = () => syncLibrary().then(() => applyActive()).catch(() => {});
+
 /** Библиотека + отметка, какие голоса уже подключены к движку. */
 async function libraryState() {
   let slots = null; try { if (await alive()) slots = ((await info()).modelSlots || []).filter((s) => s && s.name); } catch (e) { slots = null; }
@@ -371,4 +392,4 @@ async function vcInstall() {
   } catch (e) { setSt('error', 'Не удалось установить Visual C++: ' + e.message, { fix: 'vc' }); }
   return state();
 }
-module.exports = { vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+module.exports = { getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
