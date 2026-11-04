@@ -1,0 +1,10 @@
+# Движок Овервойса. torch ставится отдельно (CUDA-сборка под видеокарту), остальное отсюда.
+numpy
+transformers
+faiss-cpu
+librosa
+soundfile
+scipy
+sounddevice
+praat-parselmouth
+einops
