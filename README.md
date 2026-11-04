@@ -18,3 +18,6 @@
 
 ## Тесты
 `npm install && npm test`
+
+## Движок (с версии 0.10)
+Свой движок лежит в `engine/` (RVC, MIT, `engine/LICENSE-RVC`). Установка одной кнопкой: встроенный Python, PyTorch, библиотеки и модели HuBERT/RMVPE в папку `ov-engine`. Старый движок VCClient больше не используется.

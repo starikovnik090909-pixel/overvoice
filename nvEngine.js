@@ -1,5 +1,5 @@
-// nvEngine.js — Overvoice: нейроголос на основе VCClient (Wataru Okada, MIT). Приложение скачивает готовую сборку движка с Hugging Face автора,
-// запускает её и управляет по её API. Сам движок мы не меняем и не распространяем.
+// nvEngine.js — Overvoice: управление собственным движком нейроголоса (папка engine/, Python + PyTorch).
+// Движок ставится одной кнопкой (встроенный Python, библиотеки, модели) и запускается скрытым процессом, которым управляет эта программа.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -8,21 +8,25 @@ const http = require('http');
 const https = require('https');
 const { spawn, execFile } = require('child_process');
 
-const BASE = 'https://huggingface.co/wok000/vcclient000/resolve/main/';
+const PY_URL = 'https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip';
+const PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
+const HF = 'https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/';
+const ASSETS = [['hubert_base/config.json', 'hubert_base/config.json'], ['hubert_base/preprocessor_config.json', 'hubert_base/preprocessor_config.json'], ['hubert_base/pytorch_model.bin', 'hubert_base/pytorch_model.bin'], ['rmvpe.pt', 'rmvpe/rmvpe.pt']];
 const VARIANTS = {
-  cuda: { file: 'MMVCServerSIO_win_onnxgpu-cuda_v.1.5.3.18a.zip', gb: 3.3, label: 'видеокарта NVIDIA (CUDA)' },
-  dml: { file: 'MMVCServerSIO_win_onnxdirectML-cuda_v.1.5.3.18a.zip', gb: 3.2, label: 'любая видеокарта (DirectML)' },
+  cuda: { gb: 7, label: 'видеокарта NVIDIA (CUDA)', index: 'https://download.pytorch.org/whl/cu124', dl: 3.0 },
+  dml: { gb: 3, label: 'без NVIDIA: процессор (медленно)', index: 'https://download.pytorch.org/whl/cpu', dl: 0.3 },
 };
-const DEFAULTS = { variant: 'cuda', port: 18888, autostart: false, urlOverride: '', obsInput: 'NV Микрофон', dir: '' };
+const DEFAULTS = { variant: 'cuda', port: 18900, autostart: false, urlOverride: '', obsInput: 'NV Микрофон', dir: '' };
 let DIR = __dirname, cfg = { ...DEFAULTS }, useFile = true;
 let st = { state: 'none', text: '', pct: 0 };
 let child = null, log = [], busy = null, onChange = () => {};
 const setSt = (state, text, extra) => { st = Object.assign({ state, text: text || '', pct: 0 }, extra || {}); onChange(); };
 
 const baseDir = () => cfg.dir || DIR;   // куда ставится движок: выбранная папка или папка программы
-const engineDir = () => path.join(baseDir(), 'nv-engine');
+const engineDir = () => path.join(baseDir(), 'ov-engine');
+const codeDir = () => path.join(__dirname, 'engine');
 const cfgFile = () => path.join(DIR, 'nv_settings.json');
-function load() { try { const j = JSON.parse(fs.readFileSync(cfgFile(), 'utf8')); cfg = clean(j); } catch (e) { cfg = { ...DEFAULTS }; } }
+function load() { try { const j = JSON.parse(fs.readFileSync(cfgFile(), 'utf8')); if (Number(j.port) === 18888) j.port = 18900; cfg = clean(j); } catch (e) { cfg = { ...DEFAULTS }; } }
 function clean(j) {
   const o = j && typeof j === 'object' ? j : {};
   const n = Number(o.port);
@@ -41,7 +45,6 @@ function init(o) {
 }
 const getSettings = () => ({ ...cfg });
 function update(b) { if (busy && b && b.dir !== undefined && b.dir !== cfg.dir) return state(); cfg = clean(b); persist(); return state(); }
-const zipUrl = () => cfg.urlOverride || BASE + VARIANTS[cfg.variant].file;
 function state() { return { settings: getSettings(), status: { ...st, running: st.state === 'running' }, variants: VARIANTS, tail: log.slice(-12), installed: !!findExe() }; }
 
 // ---------- поиск запускного файла и аргументов ----------
@@ -56,19 +59,20 @@ function walk(dir, depth, test) {
   } catch (e) { /* нет папки */ }
   return out;
 }
-function findExe() { return walk(engineDir(), 3, (n) => /^MMVCServerSIO(\.exe)?$/i.test(n)); }
-/** Аргументы запуска берём из start_http.bat самой сборки, чтобы не гадать с путями к файлам нейросетей. */
-function launchArgs(exe) {
-  let args = ['--https', 'false'];
-  const bat = walk(path.dirname(exe), 1, (n) => /^start_http\.bat$/i.test(n));
-  if (bat) {
-    try {
-      const line = fs.readFileSync(bat, 'utf8').split(/\r?\n/).find((l) => /MMVCServerSIO/i.test(l) && !/^\s*(rem|::)/i.test(l));
-      if (line) { const rest = line.replace(/^.*?MMVCServerSIO(\.exe)?"?/i, '').trim(); if (rest) args = rest.match(/"[^"]*"|\S+/g).map((a) => a.replace(/^"|"$/g, '')); }
-    } catch (e) { /* возьмём по умолчанию */ }
-  }
-  const i = args.indexOf('-p'); if (i >= 0) args[i + 1] = String(cfg.port); else args.unshift('-p', String(cfg.port));
-  return args;
+const winp = process.platform === 'win32';
+const pyExe = () => process.env.OV_PY || path.join(engineDir(), 'py', winp ? 'python.exe' : 'bin/python3');
+const readyFile = () => path.join(engineDir(), '.ready');
+const assetsDir = () => path.join(engineDir(), 'assets');
+/** Запускной файл (Python движка), если установка завершена. */
+function findExe() { return fs.existsSync(readyFile()) && fs.existsSync(pyExe()) ? pyExe() : null; }
+function launchArgs() { return ['-m', 'ovengine', '--assets', assetsDir(), '--voices', voicesDir(), '--port', String(cfg.port), '--parent', String(process.pid)]; }
+/** Файл ._pth встроенного Python должен знать, где лежит код движка (папка программы может переехать). */
+function writePth() {
+  const d = path.join(engineDir(), 'py'); let f = null;
+  try { f = fs.readdirSync(d).find((x) => /^python3\d+\._pth$/i.test(x)); } catch (e) { return; }
+  if (!f) return;
+  const z = f.replace(/\._pth$/i, '.zip');
+  fs.writeFileSync(path.join(d, f), [z, '.', 'Lib\\site-packages', codeDir(), 'import site', ''].join('\r\n'));
 }
 
 // ---------- загрузка и распаковка ----------
@@ -109,68 +113,84 @@ function unpackPs(zip, dir) {
 }
 function freeGb(dir) { try { const s = fs.statfsSync(dir); return (s.bavail * s.bsize) / 1073741824; } catch (e) { return Infinity; } }
 
+const dirSize = (d) => { let n = 0; try { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); n += e.isDirectory() ? dirSize(p) : (e.isFile() ? fs.statSync(p).size : 0); } } catch (e) { /* нет папки */ } return n; };
+/** Запуск python (pip и проверки) с выводом в журнал. */
+function runPy(args, onLine, env) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(pyExe(), args, { cwd: engineDir(), windowsHide: true, env: Object.assign({}, process.env, { PYTHONUTF8: '1', PYTHONNOUSERSITE: '1', PIP_DISABLE_PIP_VERSION_CHECK: '1' }, env || {}) });
+    const tail = []; const feed = (b) => String(b).split(/\r?\n/).filter(Boolean).forEach((l) => { tail.push(l); if (tail.length > 12) tail.shift(); if (onLine) onLine(l); });
+    p.stdout.on('data', feed); p.stderr.on('data', feed);
+    p.on('error', reject); p.on('exit', (c) => (c === 0 ? resolve() : reject(new Error('Команда завершилась с кодом ' + c + ': ' + tail.slice(-3).join(' | ')))));
+  });
+}
+/** Шаги установки. Каждый можно повторять: что уже есть, пропускается. */
+let installer = async function realInstall() {
+  const ed = engineDir(), v = VARIANTS[cfg.variant]; fs.mkdirSync(ed, { recursive: true });
+  if (!fs.existsSync(path.join(codeDir(), 'ovengine', '__init__.py'))) throw new Error('В папке программы нет кода движка (папка engine). Обнови Овервойс.');
+  if (freeGb(ed) < v.gb) throw new Error('Мало места на диске: нужно около ' + v.gb + ' ГБ свободно');
+  const prog = (text, pct) => { st = { state: 'downloading', text, pct: pct || 0 }; onChange(); };
+  let last = 0; const dl = (url, dest, label) => download(url, dest, (got, total) => { const now = Date.now(); if (now - last < 700) return; last = now; prog(label + ': ' + (got / 1048576).toFixed(0) + (total ? ' из ' + (total / 1048576).toFixed(0) : '') + ' МБ', total ? Math.round((got / total) * 100) : 0); });
+  // 1. Python
+  if (!fs.existsSync(pyExe())) {
+    const zip = path.join(ed, 'python-embed.zip'); await dl(PY_URL, zip, 'Скачиваю Python');
+    setSt('unpacking', 'Распаковываю Python…'); await unpack(zip, path.join(ed, 'py')); try { fs.unlinkSync(zip); } catch (e) { /* не критично */ }
+  }
+  writePth();
+  // 2. pip
+  const hasPip = () => fs.existsSync(path.join(ed, 'py', 'Lib', 'site-packages', 'pip'));
+  if (!hasPip()) { const gp = path.join(ed, 'get-pip.py'); await dl(PIP_URL, gp, 'Скачиваю установщик библиотек'); setSt('working', 'Ставлю установщик библиотек…'); await runPy([gp, '--no-warn-script-location']); try { fs.unlinkSync(gp); } catch (e) { /* не критично */ } }
+  // 3. torch (самое большое: видеокартная сборка около 3 ГБ). Размер видно по папке кэша pip.
+  const hasTorch = () => fs.existsSync(path.join(ed, 'py', 'Lib', 'site-packages', 'torch', '__init__.py'));
+  const cache = path.join(ed, 'pipcache');
+  if (!hasTorch()) {
+    const t = setInterval(() => { const g = dirSize(cache) / 1073741824; st = { state: 'downloading', text: 'Скачиваю нейросетевую библиотеку: ' + g.toFixed(2) + ' из ~' + v.dl.toFixed(1) + ' ГБ (один раз)', pct: Math.min(99, Math.round((g / v.dl) * 100)) }; onChange(); }, 1500);
+    try { await runPy(['-m', 'pip', 'install', '--no-warn-script-location', 'torch==2.6.0', 'torchaudio==2.6.0', '--index-url', v.index], null, { PIP_CACHE_DIR: cache }); } finally { clearInterval(t); }
+  }
+  setSt('working', 'Ставлю остальные библиотеки…');
+  await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '-r', path.join(codeDir(), 'requirements.txt')], (l) => { if (/^(Collecting|Downloading|Installing)/.test(l)) { st = { state: 'working', text: 'Ставлю библиотеки: ' + l.slice(0, 60), pct: 0 }; onChange(); } }, { PIP_CACHE_DIR: cache });
+  try { fs.rmSync(cache, { recursive: true, force: true }); } catch (e) { /* не критично */ }
+  // 4. модели HuBERT и RMVPE
+  for (const [src, dst] of ASSETS) {
+    const to = path.join(assetsDir(), dst); if (fs.existsSync(to) && fs.statSync(to).size > 1000) continue;
+    fs.mkdirSync(path.dirname(to), { recursive: true }); await dl(HF + src, to, 'Скачиваю модель ' + path.basename(dst));
+  }
+  // 5. проверка: библиотеки читаются, видеокарта видна
+  setSt('working', 'Проверяю установку…');
+  let out = ''; await runPy(['-c', 'import torch, ovengine, transformers, faiss, librosa, sounddevice; print("CUDA" if torch.cuda.is_available() else "CPU")'], (l) => { out = l; });
+  fs.writeFileSync(readyFile(), JSON.stringify({ at: Date.now(), variant: cfg.variant, device: out }));
+  return out;
+};
+
 /** Скачать и установить движок. Можно прервать закрытием программы: загрузка продолжится с того же места. */
 function install(force) {
   if (busy) return busy;
   busy = (async () => {
     try {
-      if (force) { stop(); await new Promise((r) => setTimeout(r, 800)); try { fs.rmSync(engineDir(), { recursive: true, force: true }); } catch (e) { throw new Error('Не удалось удалить старый движок: ' + e.message + '. Закрой программы, которые его используют.'); } }
+      if (force) { stop(); await new Promise((r) => setTimeout(r, 800)); try { fs.rmSync(engineDir(), { recursive: true, force: true }); } catch (e) { throw new Error('Не удалось удалить старый движок: ' + e.message + '. Закрой программы, которые его используют, и попробуй ещё раз.'); } }
       fs.mkdirSync(baseDir(), { recursive: true });
-      const need = (VARIANTS[cfg.variant].gb || 3.5) * 2.2;
-      if (freeGb(baseDir()) < need) throw new Error('Мало места на диске: нужно около ' + Math.ceil(need) + ' ГБ свободно');
-      const zip = path.join(baseDir(), 'nv-engine.zip');
-      setSt('downloading', 'Скачиваю движок…', { pct: 0 });
-      let last = 0;
-      await download(zipUrl(), zip, (got, total) => { const now = Date.now(); if (now - last < 700) return; last = now; st = { state: 'downloading', text: 'Скачиваю движок: ' + (got / 1073741824).toFixed(2) + (total ? ' из ' + (total / 1073741824).toFixed(2) : '') + ' ГБ', pct: total ? Math.round(got / total * 100) : 0 }; onChange(); });
-      setSt('unpacking', 'Распаковываю (несколько минут)…');
-      await unpack(zip, engineDir());
-      if (win && !hasPyDll(findExe())) {   // tar иногда молча пропускает файлы: пробуем второй способ
-        setSt('unpacking', 'Проверяю файлы и распаковываю ещё раз другим способом…');
-        await unpackPs(zip, engineDir());
-      }
-      if (!findExe()) throw new Error('В архиве не нашёлся запускной файл движка');
-      if (win && !hasPyDll(findExe())) throw new Error('После распаковки не хватает python310.dll. Скорее всего файл удалил антивирус: добавь папку Овервойса в исключения и нажми «Переустановить движок».');
-      try { fs.unlinkSync(zip); } catch (e) { /* не критично */ }
-      setSt('ready', 'Движок установлен');
-    } catch (e) { setSt('error', e.message, /python310/.test(e.message) ? { fix: 'reinstall' } : {}); }
+      if (cfg.variant === 'cuda' && winp && !(await hasNvidia())) { cfg.variant = 'dml'; persist(); }
+      try { fs.unlinkSync(readyFile()); } catch (e) { /* не было */ }
+      const dev = await installer();
+      setSt('ready', 'Движок установлен' + (dev === 'CPU' && cfg.variant === 'cuda' ? '. Видеокарта пока не видна — обнови драйвер NVIDIA' : ''));
+    } catch (e) { setSt('error', e.message, { fix: 'reinstall' }); }
     finally { busy = null; }
   })();
   return busy;
 }
-
-// ---------- скрыть собственное окно движка (Windows) ----------
-// Готовая сборка сама открывает окно «Voice Changer Client Demo». Оно нам не нужно: всё управление идёт из Overvoice.
-// Пока движок стартует (до двух минут), окна с таким названием прячутся, процесс при этом продолжает работать.
-const HIDE_PS = `Add-Type @"
-using System; using System.Runtime.InteropServices; using System.Text;
-public class OvW { public delegate bool CB(IntPtr h, IntPtr l);
-[DllImport("user32.dll")] public static extern bool EnumWindows(CB cb, IntPtr l);
-[DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
-[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-public static void Hide() { EnumWindows((h, l) => { if (IsWindowVisible(h)) { var sb = new StringBuilder(256); GetWindowText(h, sb, 256); if (sb.ToString().StartsWith("Voice Changer Client")) ShowWindow(h, 0); } return true; }, IntPtr.Zero); } }
-"@
-for ($i = 0; $i -lt 240; $i++) { [OvW]::Hide(); Start-Sleep -Milliseconds 500 }`;
-function hideEngineWindow() {
-  if (process.platform !== 'win32') return;
-  try {
-    const f = path.join(os.tmpdir(), 'overvoice-hide.ps1'); fs.writeFileSync(f, HIDE_PS);
-    execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', f], { windowsHide: true, timeout: 150000 }, () => {});
-  } catch (e) { /* окно просто останется видимым */ }
-}
+const hasNvidia = () => new Promise((resolve) => execFile('nvidia-smi', ['-L'], { timeout: 8000, windowsHide: true }, (e, out) => resolve(!e && /GPU/.test(String(out)))));
 
 // ---------- запуск ----------
 function req(method, p, body, ms) {
   return new Promise((resolve, reject) => {
     const data = body ? new URLSearchParams(body).toString() : null;
     const r = http.request({ host: '127.0.0.1', port: cfg.port, path: p, method, timeout: ms || 4000, headers: data ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(data) } : {} }, (res) => {
-      let s = ''; res.on('data', (c) => { s += c; }); res.on('end', () => { if (res.statusCode >= 400) return reject(new Error('Движок ответил ' + res.statusCode)); try { resolve(JSON.parse(s)); } catch (e) { resolve({}); } });
+      let s = ''; res.on('data', (c) => { s += c; }); res.on('end', () => { if (res.statusCode >= 400) { let m = ''; try { m = JSON.parse(s).error || ''; } catch (e) { m = ''; } return reject(new Error(m || 'Движок ответил ' + res.statusCode)); } try { resolve(JSON.parse(s)); } catch (e) { resolve({}); } });
     });
     r.on('error', reject); r.on('timeout', () => r.destroy(new Error('Движок не ответил'))); if (data) r.write(data); r.end();
   });
 }
 const info = () => req('GET', '/info');
-const setSetting = (key, val) => req('POST', '/update_settings', { key, val: String(val) });
+const setSetting = (key, val) => req('POST', '/update_settings', { key, val: String(val) }, key === 'modelSlotIndex' || key === 'serverAudioStated' ? 180000 : 8000);
 async function alive() { try { await info(); return true; } catch (e) { return false; } }
 
 // движок мог остаться висеть в фоне (или запущен вручную): подхватываем его сами, без повторного запуска
@@ -192,16 +212,16 @@ async function startInner() {
   if (child) return state();
   if (await alive()) { setSt('running', 'Движок уже запущен'); syncAndApply(); return state(); }
   const exe = findExe(); if (!exe) { setSt('error', 'Движок не установлен'); return state(); }
-  if (win && !fs.existsSync(path.join(path.dirname(exe), 'python310.dll')) && walk(path.dirname(exe), 2, (n) => /^python3\d+\.dll$/i.test(n)) === null) { setSt('error', 'В папке движка нет python310.dll: файл не распаковался или его удалил антивирус. Нажми «Переустановить движок».', { fix: 'reinstall' }); return state(); }
+  if (win && !fs.existsSync(path.join(path.dirname(exe), 'python310.dll')) && walk(path.dirname(exe), 2, (n) => /^python3\d+\.dll$/i.test(n)) === null) { setSt('error', 'В папке Python движка нет python312.dll: файл не распаковался или его удалил антивирус. Нажми «Переустановить движок».', { fix: 'reinstall' }); return state(); }
   log = []; setSt('starting', 'Запускаю движок (в первый раз до нескольких минут)…');
   // после «Остановить» старый процесс ещё может держать порт: ждём, пока он освободится (иначе новый движок не запустится)
   for (let i = 0; i < 20 && stoppedAt && Date.now() - stoppedAt < 15000 && (await alive()); i++) await new Promise((r) => setTimeout(r, 500));
-  const me = spawn(exe, launchArgs(exe), { cwd: path.dirname(exe), windowsHide: true }); child = me;
-  hideEngineWindow();
+  writePth();
+  const me = spawn(exe, launchArgs(exe), { cwd: codeDir(), windowsHide: true, env: Object.assign({}, process.env, { PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', PYTHONNOUSERSITE: '1' }) }); child = me;
   const dec = (b) => { if (!win) return String(b); try { const u = new TextDecoder('utf-8', { fatal: true }).decode(b); return u; } catch (e) { try { return new TextDecoder('ibm866').decode(b); } catch (e2) { return String(b); } } };
   const keep = (b) => { dec(b).split(/\r?\n/).filter(Boolean).forEach((l) => { log.push(l.slice(0, 300)); if (log.length > 60) log.shift(); }); };
   me.stdout.on('data', keep); me.stderr.on('data', keep);
-  me.on('exit', (code) => { if (child === me) child = null; else return; if (st.state === 'running' || st.state === 'starting') { const dll = log.some((l) => /python\d*\.dll|LoadLibrary/i.test(l)); setSt(dll ? 'error' : 'ready', dll ? 'Не загрузился python310.dll: чаще всего не хватает Visual C++ (его можно поставить кнопкой ниже) или антивирус заблокировал файлы движка (добавь папку в исключения или переустанови движок).' : (code ? 'Движок остановился (код ' + code + ')' : 'Движок остановлен'), dll ? { fix: 'vc' } : {}); } });
+  me.on('exit', (code) => { if (child === me) child = null; else return; if (st.state === 'running' || st.state === 'starting') { const dll = log.some((l) => /python\d*\.dll|LoadLibrary|DLL load failed|WinError 126/i.test(l)); setSt(dll ? 'error' : 'ready', dll ? 'Не загрузилась библиотека Python или PyTorch: чаще всего не хватает Visual C++ (его можно поставить кнопкой ниже) или антивирус заблокировал файлы движка (добавь папку в исключения или переустанови движок).' : (code ? 'Движок остановился (код ' + code + ')' : 'Движок остановлен'), dll ? { fix: 'vc' } : {}); } });
   me.on('error', (e) => { if (child === me) child = null; setSt('error', 'Не удалось запустить: ' + e.message); });
   for (let i = 0; i < 240 && child; i++) { if (await alive()) { setSt('running', 'Движок работает'); syncAndApply(); return state(); } await new Promise((r) => setTimeout(r, 1000)); }
   if (child === me) { stop(); setSt('error', 'Движок не запустился за 4 минуты. Проверь журнал ниже.'); }
@@ -211,7 +231,7 @@ let stoppedAt = 0;
 function stop() {
   const c = child; child = null; if (c) stoppedAt = Date.now();
   if (c) { try { if (process.platform === 'win32') execFile('taskkill', ['/PID', String(c.pid), '/T', '/F'], () => {}); else c.kill(); } catch (e) { /* уже завершён */ } }
-  else if (process.platform === 'win32') { stoppedAt = Date.now(); execFile('taskkill', ['/IM', 'MMVCServerSIO.exe', '/T', '/F'], () => {}); }   // движок запущен не нами (остался с прошлого раза)
+  else { stoppedAt = Date.now(); req('POST', '/shutdown', {}, 3000).catch(() => {}); }   // движок запущен не нами (остался с прошлого раза): просим его закрыться
   if (st.state === 'running' || st.state === 'starting') setSt('ready', 'Движок остановлен');
   return state();
 }
@@ -443,4 +463,5 @@ async function vcInstall() {
   } catch (e) { setSt('error', 'Не удалось установить Visual C++: ' + e.message, { fix: 'vc' }); }
   return state();
 }
-module.exports = { select, selState, watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+const _setInstaller = (f) => { installer = f; };
+module.exports = { _setInstaller, select, selState, watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };

@@ -7,7 +7,10 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from urllib.parse import parse_qs
+
 from ovengine.core import Engine, EngineError
+from ovengine import compat
 
 log = logging.getLogger('ovengine')
 
@@ -30,8 +33,11 @@ def make_handler(eng, stop_evt):
             n = int(self.headers.get('Content-Length') or 0)
             if n <= 0:
                 return {}
+            raw = self.rfile.read(n).decode('utf-8', 'replace')
             try:
-                return json.loads(self.rfile.read(n).decode('utf-8'))
+                if 'json' not in (self.headers.get('Content-Type') or '') and '=' in raw and not raw.lstrip().startswith('{'):
+                    return {k: v[0] for k, v in parse_qs(raw).items()}   # форма key=…&val=… как у VCClient
+                return json.loads(raw)
             except Exception:
                 raise EngineError('Тело запроса не JSON')
 
@@ -48,12 +54,18 @@ def make_handler(eng, stop_evt):
                 if method == 'GET' and path in ('/', '/health'):
                     return self.send(200, {'ok': True})
                 if method == 'GET' and path == '/info':
-                    d = eng.info(); d['busy'] = state['busy']; d['ok'] = True; return self.send(200, d)
+                    d = compat.vc_info(eng); d['busy'] = state['busy']; d['ok'] = True; return self.send(200, d)
                 if method == 'GET' and path == '/devices':
                     return self.send(200, {'ok': True, 'devices': eng.devices()})
                 if method == 'GET' and path == '/library':
                     return self.send(200, {'ok': True, 'voices': eng.library()})
                 b = self.body() if method == 'POST' else {}
+                if method == 'POST' and path == '/update_settings':
+                    try:
+                        known = compat.vc_set(eng, str(b.get('key', '')), b.get('val'), self.work)
+                    except ValueError as e:
+                        raise EngineError(str(e))
+                    return self.send(200, {'ok': True, 'known': bool(known)})
                 if method == 'POST' and path == '/use':
                     self.work('Готовлю голос «%s»…' % b.get('name'), lambda: eng.use(str(b.get('name', ''))))
                     return self.send(200, {'ok': True, 'active': eng.active})

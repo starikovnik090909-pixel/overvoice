@@ -1,5 +1,6 @@
 """Ядро движка: голоса, настройки, звуковой поток. Всё, что нужно Овервойсу, доступно через методы этого класса."""
 import glob
+import json
 import logging
 import os
 import queue
@@ -49,6 +50,11 @@ class Engine:
         self._run = False; self._thr = None; self._stream = None; self._qin = None; self._qout = None
         self._gain_prev = 1.0
         self.io = {'input': '', 'output': ''}
+        self.pref = {'input': '', 'output': ''}; self.state_file = os.path.join(os.path.dirname(os.path.abspath(assets)), 'engine_state.json')
+        try:
+            import json; self.pref.update({k: str(v) for k, v in json.load(open(self.state_file, encoding='utf-8')).items() if k in self.pref})
+        except Exception:
+            pass
 
     # ---------- журнал ----------
     def say(self, m):
@@ -59,6 +65,10 @@ class Engine:
 
     # ---------- голоса ----------
     def _shared(self):
+        with self.lock:
+            self._shared_locked()
+
+    def _shared_locked(self):
         if self.hub is None:
             half = bool(self.cfg['half']) and self.dev.type == 'cuda'
             self.say('Загружаю общие модели (HuBERT, RMVPE) на ' + self.dev_name)
@@ -203,7 +213,57 @@ class Engine:
         hit.sort(key=lambda d: ('WASAPI' not in d['api'], 'MME' in d['api']))
         return hit[0]
 
+    def _save_pref(self):
+        try:
+            import json; json.dump(self.pref, open(self.state_file, 'w', encoding='utf-8'), ensure_ascii=False)
+        except OSError:
+            pass
+
+    def pick_device_id(self, kind, did):
+        """Запомнить устройство по номеру (в файле храним имя: номера между запусками меняются)."""
+        if did < 0:
+            self.pref[kind] = ''
+        else:
+            d = next((x for x in self.devices() if x['id'] == did), None)
+            if d is None:
+                raise EngineError('Нет устройства с номером %d' % did)
+            self.pref[kind] = d['name']
+        self._save_pref()
+
+    def pref_ids(self):
+        """Номера выбранных устройств (или -1)."""
+        try:
+            devs = self.devices()
+        except Exception:
+            return -1, -1
+        def f(kind, key):
+            n = self.pref[kind]
+            if not n:
+                return -1
+            hit = sorted([d for d in devs if d['name'] == n and d[key] > 0], key=lambda d: 'WASAPI' not in d['api'])
+            return hit[0]['id'] if hit else -1
+        return f('input', 'in'), f('output', 'out')
+
+    def auto_device(self, kind):
+        """Выбор по умолчанию: микрофон — системный, вывод — виртуальный кабель, если он есть."""
+        import sounddevice as sd
+        devs = [d for d in self.devices() if d['in' if kind == 'input' else 'out'] > 0]
+        if kind == 'output':
+            cab = [d for d in devs if 'cable input' in d['name'].lower()]
+            if cab:
+                return sorted(cab, key=lambda d: 'WASAPI' not in d['api'])[0]['name']
+            raise EngineError('Не найден виртуальный кабель (CABLE Input). Поставь его кнопкой в разделе «Звук и OBS»')
+        try:
+            di = sd.default.device[0]; return next(d['name'] for d in devs if d['id'] == di)
+        except Exception:
+            raise EngineError('Не выбран микрофон')
+
     def start(self, inp, out):
+        inp = inp or self.pref['input'] or self.auto_device('input')
+        out = out or self.pref['output'] or self.auto_device('output')
+        return self._start(inp, out)
+
+    def _start(self, inp, out):
         import sounddevice as sd
         with self.lock:
             if self._run:

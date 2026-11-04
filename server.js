@@ -1,4 +1,4 @@
-// Overvoice — нейроголос для стрима на основе VCClient (Wataru Okada, MIT).
+// Overvoice — нейроголос для стрима, свой движок на основе RVC (MIT).
 // Страница управления: http://localhost:3055
 'use strict';
 const path = require('path');

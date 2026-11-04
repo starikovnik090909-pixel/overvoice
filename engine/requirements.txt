@@ -1,10 +1,8 @@
-# Движок Овервойса. torch ставится отдельно (CUDA-сборка под видеокарту), остальное отсюда.
-numpy
-transformers
+# Библиотеки движка Овервойса (torch ставится отдельным шагом: видеокартная или процессорная сборка)
+numpy>=1.26.4,<2
+transformers==4.49.0
 faiss-cpu
-librosa
+librosa>=0.10.2,<0.11
 soundfile
 scipy
 sounddevice
-praat-parselmouth
-einops
