@@ -173,26 +173,32 @@ const info = () => req('GET', '/info');
 const setSetting = (key, val) => req('POST', '/update_settings', { key, val: String(val) });
 async function alive() { try { await info(); return true; } catch (e) { return false; } }
 
-async function start() {
+let startP = null;
+const start = () => startP || (startP = startInner().finally(() => { startP = null; }));
+async function startInner() {
   if (child) return state();
   if (await alive()) { setSt('running', 'Движок уже запущен'); syncAndApply(); return state(); }
   const exe = findExe(); if (!exe) { setSt('error', 'Движок не установлен'); return state(); }
   if (win && !fs.existsSync(path.join(path.dirname(exe), 'python310.dll')) && walk(path.dirname(exe), 2, (n) => /^python3\d+\.dll$/i.test(n)) === null) { setSt('error', 'В папке движка нет python310.dll: файл не распаковался или его удалил антивирус. Нажми «Переустановить движок».', { fix: 'reinstall' }); return state(); }
   log = []; setSt('starting', 'Запускаю движок (в первый раз до нескольких минут)…');
-  child = spawn(exe, launchArgs(exe), { cwd: path.dirname(exe), windowsHide: true });
+  // после «Остановить» старый процесс ещё может держать порт: ждём, пока он освободится (иначе новый движок не запустится)
+  for (let i = 0; i < 20 && stoppedAt && Date.now() - stoppedAt < 15000 && (await alive()); i++) await new Promise((r) => setTimeout(r, 500));
+  const me = spawn(exe, launchArgs(exe), { cwd: path.dirname(exe), windowsHide: true }); child = me;
   hideEngineWindow();
   const dec = (b) => { if (!win) return String(b); try { const u = new TextDecoder('utf-8', { fatal: true }).decode(b); return u; } catch (e) { try { return new TextDecoder('ibm866').decode(b); } catch (e2) { return String(b); } } };
   const keep = (b) => { dec(b).split(/\r?\n/).filter(Boolean).forEach((l) => { log.push(l.slice(0, 300)); if (log.length > 60) log.shift(); }); };
-  child.stdout.on('data', keep); child.stderr.on('data', keep);
-  child.on('exit', (code) => { child = null; if (st.state === 'running' || st.state === 'starting') { const dll = log.some((l) => /python\d*\.dll|LoadLibrary/i.test(l)); setSt(dll ? 'error' : 'ready', dll ? 'Не загрузился python310.dll: чаще всего не хватает Visual C++ (его можно поставить кнопкой ниже) или антивирус заблокировал файлы движка (добавь папку в исключения или переустанови движок).' : (code ? 'Движок остановился (код ' + code + ')' : 'Движок остановлен'), dll ? { fix: 'vc' } : {}); } });
-  child.on('error', (e) => { child = null; setSt('error', 'Не удалось запустить: ' + e.message); });
+  me.stdout.on('data', keep); me.stderr.on('data', keep);
+  me.on('exit', (code) => { if (child === me) child = null; else return; if (st.state === 'running' || st.state === 'starting') { const dll = log.some((l) => /python\d*\.dll|LoadLibrary/i.test(l)); setSt(dll ? 'error' : 'ready', dll ? 'Не загрузился python310.dll: чаще всего не хватает Visual C++ (его можно поставить кнопкой ниже) или антивирус заблокировал файлы движка (добавь папку в исключения или переустанови движок).' : (code ? 'Движок остановился (код ' + code + ')' : 'Движок остановлен'), dll ? { fix: 'vc' } : {}); } });
+  me.on('error', (e) => { if (child === me) child = null; setSt('error', 'Не удалось запустить: ' + e.message); });
   for (let i = 0; i < 240 && child; i++) { if (await alive()) { setSt('running', 'Движок работает'); syncAndApply(); return state(); } await new Promise((r) => setTimeout(r, 1000)); }
-  if (child) { stop(); setSt('error', 'Движок не запустился за 4 минуты. Проверь журнал ниже.'); }
+  if (child === me) { stop(); setSt('error', 'Движок не запустился за 4 минуты. Проверь журнал ниже.'); }
   return state();
 }
+let stoppedAt = 0;
 function stop() {
-  const c = child; child = null;
+  const c = child; child = null; if (c) stoppedAt = Date.now();
   if (c) { try { if (process.platform === 'win32') execFile('taskkill', ['/PID', String(c.pid), '/T', '/F'], () => {}); else c.kill(); } catch (e) { /* уже завершён */ } }
+  else if (process.platform === 'win32') { stoppedAt = Date.now(); execFile('taskkill', ['/IM', 'MMVCServerSIO.exe', '/T', '/F'], () => {}); }   // движок запущен не нами (остался с прошлого раза)
   if (st.state === 'running' || st.state === 'starting') setSt('ready', 'Движок остановлен');
   return state();
 }
