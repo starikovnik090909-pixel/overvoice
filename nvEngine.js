@@ -128,9 +128,9 @@ const dirSize = (d) => { let n = 0; try { for (const e of fs.readdirSync(d, { wi
 function runPy(args, onLine, env) {
   return new Promise((resolve, reject) => {
     const p = spawn(pyExe(), args, { cwd: engineDir(), windowsHide: true, env: Object.assign({}, process.env, { PYTHONUTF8: '1', PYTHONNOUSERSITE: '1', PIP_DISABLE_PIP_VERSION_CHECK: '1' }, env || {}) });
-    const tail = []; const feed = (b) => String(b).split(/\r?\n/).filter(Boolean).forEach((l) => { tail.push(l); if (tail.length > 12) tail.shift(); if (onLine) onLine(l); });
+    const tail = []; const feed = (b) => String(b).split(/\r?\n/).filter(Boolean).forEach((l) => { if (/MB\/s|kB\/s|eta \d|[━─]{4,}|-{8,}/.test(l)) return; tail.push(l); if (tail.length > 12) tail.shift(); if (onLine) onLine(l); });
     p.stdout.on('data', feed); p.stderr.on('data', feed);
-    p.on('error', reject); p.on('exit', (c) => (c === 0 ? resolve() : reject(new Error('Команда завершилась с кодом ' + c + ': ' + tail.slice(-3).join(' | ')))));
+    p.on('error', reject); p.on('exit', (c) => (c === 0 ? resolve() : reject(new Error('Команда завершилась с кодом ' + c + ': ' + (tail.filter((l) => /error|ошибк|timed out|reset|refused|no matching|could not/i.test(l)).slice(-3).concat(tail.slice(-2)).join(' | ').slice(0, 600))))));
   });
 }
 /** Шаги установки. Каждый можно повторять: что уже есть, пропускается. */
@@ -159,11 +159,16 @@ let installer = async function realInstall() {
     const local = [];
     for (const f of files) { const name = decodeURIComponent(f), to = path.join(wh, name); await dl(v.index + '/' + f, to, 'Скачиваю ' + name.split('-')[0]); local.push(to); }
     setSt('working', 'Ставлю нейросетевую библиотеку (несколько минут)…');
-    await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--retries', '10', '--timeout', '60'].concat(local), null, { PIP_CACHE_DIR: cache });
+    await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', '--retries', '10', '--timeout', '60'].concat(local), null, { PIP_CACHE_DIR: cache });
     try { fs.rmSync(wh, { recursive: true, force: true }); } catch (e) { /* не критично */ }
   }
-  setSt('working', 'Ставлю остальные библиотеки…');
-  await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--retries', '10', '--timeout', '60', '-r', path.join(codeDir(), 'requirements.txt')], (l) => { if (/^(Collecting|Downloading|Installing)/.test(l)) { st = { state: 'working', text: 'Ставлю библиотеки: ' + l.slice(0, 60), pct: 0 }; onChange(); } }, { PIP_CACHE_DIR: cache });
+  for (let n = 1; ; n++) {   // библиотеки с PyPI: при обрыве связи повторяем (уже скачанное лежит в кэше pip)
+    setSt('working', 'Ставлю остальные библиотеки…' + (n > 1 ? ' (попытка ' + n + ')' : ''));
+    try {
+      await runPy(['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', '--retries', '10', '--timeout', '60', '-r', path.join(codeDir(), 'requirements.txt')], (l) => { if (/^(Collecting|Downloading|Installing)/.test(l)) { st = { state: 'working', text: 'Ставлю библиотеки: ' + l.slice(0, 60) + (n > 1 ? ' (попытка ' + n + ')' : ''), pct: 0 }; onChange(); } }, { PIP_CACHE_DIR: cache });
+      break;
+    } catch (e) { if (n >= 8) throw e; await new Promise((r) => setTimeout(r, 3000)); }
+  }
   try { fs.rmSync(cache, { recursive: true, force: true }); } catch (e) { /* не критично */ }
   // 4. модели HuBERT и RMVPE
   for (const [src, dst] of ASSETS) {
