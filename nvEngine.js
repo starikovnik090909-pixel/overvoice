@@ -42,7 +42,7 @@ function init(o) {
 const getSettings = () => ({ ...cfg });
 function update(b) { if (busy && b && b.dir !== undefined && b.dir !== cfg.dir) return state(); cfg = clean(b); persist(); return state(); }
 const zipUrl = () => cfg.urlOverride || BASE + VARIANTS[cfg.variant].file;
-function state() { return { settings: getSettings(), status: { ...st, running: !!child && st.state === 'running' }, variants: VARIANTS, tail: log.slice(-12), installed: !!findExe() }; }
+function state() { return { settings: getSettings(), status: { ...st, running: st.state === 'running' }, variants: VARIANTS, tail: log.slice(-12), installed: !!findExe() }; }
 
 // ---------- поиск запускного файла и аргументов ----------
 function walk(dir, depth, test) {
@@ -173,6 +173,15 @@ const info = () => req('GET', '/info');
 const setSetting = (key, val) => req('POST', '/update_settings', { key, val: String(val) });
 async function alive() { try { await info(); return true; } catch (e) { return false; } }
 
+// движок мог остаться висеть в фоне (или запущен вручную): подхватываем его сами, без повторного запуска
+async function adopt() {
+  if (child || startP || busy) return;
+  const up = await alive();
+  if (up && st.state !== 'running') { setSt('running', 'Движок уже работал в фоне, подключился к нему'); syncAndApply(); }
+  else if (!up && st.state === 'running' && !child) setSt('ready', 'Движок остановлен');
+}
+let adoptT = null;
+function watch() { if (adoptT) return; adopt().catch(() => {}); adoptT = setInterval(() => adopt().catch(() => {}), 4000); if (adoptT.unref) adoptT.unref(); }
 let startP = null;
 const start = () => startP || (startP = startInner().finally(() => { startP = null; }));
 async function startInner() {
@@ -398,4 +407,4 @@ async function vcInstall() {
   } catch (e) { setSt('error', 'Не удалось установить Visual C++: ' + e.message, { fix: 'vc' }); }
   return state();
 }
-module.exports = { okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+module.exports = { watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
