@@ -123,11 +123,17 @@ function unpackPs(zip, dir) {
 }
 function freeGb(dir) { try { const s = fs.statfsSync(dir); return (s.bavail * s.bsize) / 1073741824; } catch (e) { return Infinity; } }
 
+/** Всё, что движок и pip пишут во временные места, уводим в папку движка: на системном диске C: ничего не остаётся. */
+function homeEnv() {
+  const ed = engineDir(), t = path.join(ed, 'tmp'), c = path.join(ed, 'cache');
+  try { fs.mkdirSync(t, { recursive: true }); fs.mkdirSync(c, { recursive: true }); } catch (e) { /* не критично */ }
+  return { TMP: t, TEMP: t, TMPDIR: t, PIP_CACHE_DIR: path.join(ed, 'pipcache'), HF_HOME: path.join(c, 'hf'), TORCH_HOME: path.join(c, 'torch'), XDG_CACHE_HOME: c, NUMBA_CACHE_DIR: path.join(c, 'numba'), MPLCONFIGDIR: path.join(c, 'mpl'), PYTHONPYCACHEPREFIX: path.join(c, 'pyc') };
+}
 const dirSize = (d) => { let n = 0; try { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); n += e.isDirectory() ? dirSize(p) : (e.isFile() ? fs.statSync(p).size : 0); } } catch (e) { /* нет папки */ } return n; };
 /** Запуск python (pip и проверки) с выводом в журнал. */
 function runPy(args, onLine, env) {
   return new Promise((resolve, reject) => {
-    const p = spawn(pyExe(), args, { cwd: engineDir(), windowsHide: true, env: Object.assign({}, process.env, { PYTHONUTF8: '1', PYTHONNOUSERSITE: '1', PIP_DISABLE_PIP_VERSION_CHECK: '1' }, env || {}) });
+    const p = spawn(pyExe(), args, { cwd: engineDir(), windowsHide: true, env: Object.assign({}, process.env, { PYTHONUTF8: '1', PYTHONNOUSERSITE: '1', PIP_DISABLE_PIP_VERSION_CHECK: '1' }, homeEnv(), env || {}) });
     const tail = []; const feed = (b) => String(b).split(/\r?\n/).filter(Boolean).forEach((l) => { if (/MB\/s|kB\/s|eta \d|[━─]{4,}|-{8,}/.test(l)) return; tail.push(l); if (tail.length > 12) tail.shift(); if (onLine) onLine(l); });
     p.stdout.on('data', feed); p.stderr.on('data', feed);
     p.on('error', reject); p.on('exit', (c) => (c === 0 ? resolve() : reject(new Error('Команда завершилась с кодом ' + c + ': ' + (tail.filter((l) => /error|ошибк|timed out|reset|refused|no matching|could not/i.test(l)).slice(-3).concat(tail.slice(-2)).join(' | ').slice(0, 600))))));
@@ -152,8 +158,7 @@ let installer = async function realInstall() {
   if (!hasPip()) { const gp = path.join(ed, 'get-pip.py'); await dl(PIP_URL, gp, 'Скачиваю установщик библиотек'); setSt('working', 'Ставлю установщик библиотек…'); await runPy([gp, '--no-warn-script-location']); try { fs.unlinkSync(gp); } catch (e) { /* не критично */ } }
   // 3. torch (самое большое: видеокартная сборка около 3 ГБ). Размер видно по папке кэша pip.
   const hasTorch = () => fs.existsSync(path.join(ed, 'py', 'Lib', 'site-packages', 'torch', '__init__.py'));
-  const cache = path.join(ed, 'pipcache'), tmp = path.join(ed, 'tmp'); fs.mkdirSync(tmp, { recursive: true });
-  const penv = { PIP_CACHE_DIR: cache, TMP: tmp, TEMP: tmp, TMPDIR: tmp };   // временные файлы pip — рядом с движком, а не на диске C:
+  const cache = path.join(ed, 'pipcache'), tmp = path.join(ed, 'tmp'), penv = homeEnv();   // временные файлы pip — рядом с движком, а не на диске C:
   if (!hasTorch()) {
     const tag = cfg.variant === 'cuda' ? 'cu124' : 'cpu', wh = path.join(ed, 'wheels'); fs.mkdirSync(wh, { recursive: true });
     const files = ['torch-2.6.0%2B' + tag + '-cp312-cp312-win_amd64.whl', 'torchaudio-2.6.0%2B' + tag + '-cp312-cp312-win_amd64.whl'];
@@ -239,7 +244,7 @@ async function startInner() {
   // после «Остановить» старый процесс ещё может держать порт: ждём, пока он освободится (иначе новый движок не запустится)
   for (let i = 0; i < 20 && stoppedAt && Date.now() - stoppedAt < 15000 && (await alive()); i++) await new Promise((r) => setTimeout(r, 500));
   writePth();
-  const me = spawn(exe, launchArgs(exe), { cwd: codeDir(), windowsHide: true, env: Object.assign({}, process.env, { PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', PYTHONNOUSERSITE: '1' }) }); child = me;
+  const me = spawn(exe, launchArgs(exe), { cwd: codeDir(), windowsHide: true, env: Object.assign({}, process.env, { PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', PYTHONNOUSERSITE: '1' }, homeEnv()) }); child = me;
   const dec = (b) => { if (!win) return String(b); try { const u = new TextDecoder('utf-8', { fatal: true }).decode(b); return u; } catch (e) { try { return new TextDecoder('ibm866').decode(b); } catch (e2) { return String(b); } } };
   const keep = (b) => { dec(b).split(/\r?\n/).filter(Boolean).forEach((l) => { log.push(l.slice(0, 300)); if (log.length > 60) log.shift(); }); };
   me.stdout.on('data', keep); me.stderr.on('data', keep);
