@@ -179,6 +179,10 @@ async function adopt() {
   const up = await alive();
   if (up && st.state !== 'running') { setSt('running', 'Движок уже работал в фоне, подключился к нему'); syncAndApply(); }
   else if (!up && st.state === 'running' && !child) setSt('ready', 'Движок остановлен');
+  else if (up && !syncing && Date.now() - lastSync.at > 20000) {   // в библиотеке есть голос, которого нет в движке: пробуем подключить ещё раз
+    let miss = false; try { const have = new Set(((await info()).modelSlots || []).filter((x) => x && x.name).map((x) => normOf(stemOf(x.name)))); miss = libraryList().some((v) => !have.has(normOf(stemOf(v.model)))); } catch (e) { return; }
+    if (miss && retries < 6) { retries++; await syncLibrary(); } else if (!miss) retries = 0;
+  }
 }
 let adoptT = null;
 function watch() { if (adoptT) return; adopt().catch(() => {}); adoptT = setInterval(() => adopt().catch(() => {}), 4000); if (adoptT.unref) adoptT.unref(); }
@@ -271,7 +275,7 @@ function uploadToEngine(file) {
     const rs = fs.createReadStream(file); rs.on('error', reject); rs.on('end', () => r.end(tail)); rs.pipe(r, { end: false });
   });
 }
-let syncing = false;
+let syncing = false, lastSync = { at: 0, error: '', failed: 0 }, retries = 0;
 /** Подключить к движку голоса из библиотеки, которых там ещё нет. */
 async function syncLibrary() {
   if (syncing) return { busy: true, added: 0, full: 0, failed: 0, running: true };
@@ -292,10 +296,10 @@ async function syncLibrary() {
         const fl = [{ name: v.model, kind: 'rvcModel', dir: '' }]; if (v.index) fl.push({ name: v.index, kind: 'rvcIndex', dir: '' });
         await req('POST', '/load_model', { slot: String(slot), isHalf: 'true', params: JSON.stringify({ voiceChangerType: 'RVC', slot, isSampleMode: false, sampleId: '', files: fl, params: {} }) }, 180000);
         res.added++; have.add(normOf(stemOf(v.model)));
-      } catch (e) { res.failed++; }
+      } catch (e) { res.failed++; res.error = v.name + ': ' + e.message; }
     }
     if (res.added) { try { await voices(); } catch (e) { /* кэш обновится позже */ } }
-  } finally { syncing = false; }
+  } finally { syncing = false; lastSync = { at: Date.now(), error: res.error || '', failed: res.failed }; }
   return res;
 }
 // ---------- последний выбранный голос: после перезапуска движка его сохранённые настройки применяются сами ----------
@@ -323,7 +327,7 @@ const syncAndApply = () => syncLibrary().then(() => applyActive()).catch(() => {
 async function libraryState() {
   let slots = null; try { if (await alive()) slots = ((await info()).modelSlots || []).filter((s) => s && s.name); } catch (e) { slots = null; }
   const loaded = slots && new Set(slots.map((s) => normOf(stemOf(s.name))));
-  return { running: !!slots, voices: libraryList().map((v) => ({ name: v.name, model: v.model, hasIndex: !!v.index, hasSample: !!v.sample, settings: v.settings, loaded: loaded ? loaded.has(normOf(stemOf(v.model))) : false })) };
+  return { running: !!slots, syncError: lastSync.error, voices: libraryList().map((v) => ({ name: v.name, model: v.model, hasIndex: !!v.index, hasSample: !!v.sample, settings: v.settings, loaded: loaded ? loaded.has(normOf(stemOf(v.model))) : false })) };
 }
 
 // ---------- управление голосом (Overdeck и другие программы) ----------
