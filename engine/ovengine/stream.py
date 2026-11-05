@@ -45,13 +45,19 @@ class Processor:
         n = self.block
         if x.shape[0] != n:
             raise ValueError('ожидался блок %d отсчётов, пришло %d' % (n, x.shape[0]))
-        if gate_db > -68:   # шумовой порог (дБ от полной шкалы): тихие куски обнуляем; ниже -68 — выключен
-            zc = self.zc; seg = x[:len(x) // zc * zc].reshape(-1, zc)
-            rms = np.sqrt((seg ** 2).mean(axis=1) + 1e-12); db = 20 * np.log10(rms + 1e-9)
+        if gate_db > -68:   # шумовой порог (дБ от полной шкалы); ниже -68 — выключен
+            zc = self.zc; nfr = len(x) // zc
+            seg = x[:nfr * zc].reshape(-1, zc)
+            db = 20 * np.log10(np.sqrt((seg ** 2).mean(axis=1) + 1e-12) + 1e-9)
             loud = db >= gate_db
+            hold = 25   # 250 мс: слова не режем ни в начале, ни в конце, ни в паузах между слогами
             keep = loud.copy()
-            for k in range(1, 6):   # по 50 мс вокруг громкого куска оставляем: не обрезать начало и конец слов
+            for k in range(1, hold + 1):
                 keep[k:] |= loud[:-k]; keep[:-k] |= loud[k:]
+            if getattr(self, '_gate_tail', 0) > 0:   # голос был в конце прошлого блока: начало этого оставляем
+                keep[:self._gate_tail] = True
+            idx = np.where(loud)[0]
+            self._gate_tail = max(0, hold - (nfr - 1 - int(idx[-1]))) if len(idx) else max(0, getattr(self, '_gate_tail', 0) - nfr)
             for i in np.where(~keep)[0]:
                 x[i * zc:(i + 1) * zc] = 0
         t = torch.from_numpy(np.ascontiguousarray(x)).to(self.dev)

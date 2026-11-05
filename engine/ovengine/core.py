@@ -47,7 +47,7 @@ class Engine:
         self.lock = threading.RLock()
         self.logs = deque(maxlen=80); self.err = ''
         self.stats = {'proc_ms': 0.0, 'blocks': 0, 'late': 0, 'dropped': 0}
-        self._run = False; self._thr = None; self._stream = None; self._qin = None; self._qout = None
+        self._run = False; self._thr = None; self._stream = None; self._qin = None; self._qout = None; self._inbuf = np.zeros(0, dtype=np.float32); self._incv = threading.Condition()
         self._gain_prev = 1.0
         self.io = {'input': '', 'output': ''}
         self.pref = {'input': '', 'output': ''}; self.state_file = os.path.join(os.path.dirname(os.path.abspath(assets)), 'engine_state.json')
@@ -300,23 +300,37 @@ class Engine:
                 sr = do['sr'] if do['sr'] else 48000
                 self._io_sr = sr; self._build(self.loaded[self.active]); self.warm()
                 p = self.proc; n = p.block
-                self._qin = queue.Queue(maxsize=8); self._qout = queue.Queue(maxsize=8)
+                self._qout = queue.Queue(maxsize=8); self._inbuf = np.zeros(0, dtype=np.float32)
                 self._run = True; self.stats = {'proc_ms': 0.0, 'blocks': 0, 'late': 0, 'dropped': 0}
-                outq, inq, st = self._qout, self._qin, self.stats
-                buf_in = np.zeros(0, dtype=np.float32); buf_out = [np.zeros(0, dtype=np.float32)]
+                outq, st, cv = self._qout, self.stats, self._incv
+                buf_out = [np.zeros(0, dtype=np.float32)]
+                # запас на плавность: каждый готовый блок звучит сразу после предыдущего, поэтому перед первым блоком
+                # (и после каждого опоздания) вставляем немного тишины. Так небольшие задержки расчёта не рвут слова.
+                jit = {'pad': 0, 'margin': 0, 'started': False}
 
                 def cb(indata, outdata, frames, t, status):
                     mono = indata.mean(axis=1) if indata.ndim > 1 and indata.shape[1] > 1 else indata[:, 0]
-                    try:
-                        inq.put_nowait(mono.astype(np.float32).copy())
-                    except queue.Full:
-                        st['dropped'] += 1
+                    with cv:
+                        self._inbuf = np.concatenate([self._inbuf, mono.astype(np.float32)])
+                        cap = int(6 * self._io_sr)
+                        if len(self._inbuf) > cap:   # расчёт сильно не успевает: выбросить самое старое
+                            st['dropped'] += 1; self._inbuf = self._inbuf[-cap // 2:]
+                        cv.notify()
                     need = frames; got = buf_out[0]
                     while len(got) < need:
                         try:
-                            got = np.concatenate([got, outq.get_nowait()])
+                            blk = outq.get_nowait()
+                            if not jit['margin']:
+                                jit['margin'] = int(max(0.08 * self._io_sr, 0.2 * len(blk))); jit['pad'] = jit['margin']
+                            if jit['pad']:
+                                blk = np.concatenate([np.zeros(jit['pad'], dtype=np.float32), blk]); jit['pad'] = 0
+                            jit['started'] = True
+                            got = np.concatenate([got, blk])
                         except queue.Empty:
-                            st['late'] += 1; got = np.concatenate([got, np.zeros(need - len(got), dtype=np.float32)]); break
+                            if jit['started']:   # опоздали: считаем и увеличиваем запас, чтобы не повторялось
+                                st['late'] += 1
+                                jit['margin'] = int(min(jit['margin'] * 1.5, 0.6 * self._io_sr)); jit['pad'] = jit['margin']
+                            got = np.concatenate([got, np.zeros(need - len(got), dtype=np.float32)]); break
                     outdata[:] = got[:need, None]; buf_out[0] = got[need:]
 
                 self._thr = threading.Thread(target=self._work, daemon=True, name='ov-work'); self._thr.start()
@@ -326,12 +340,15 @@ class Engine:
                     if sr2 != self._io_sr:
                         self._io_sr = sr2; self._build(self.loaded[self.active]); self.warm(); p = self.proc; n = p.block
                     extra = sd.WasapiSettings(auto_convert=True) if 'WASAPI' in ci['api'] and 'WASAPI' in co['api'] else None
-                    try:
-                        self._stream = sd.Stream(device=(ci['id'], co['id']), samplerate=sr2, channels=(1, 1), dtype='float32', blocksize=0, callback=cb, extra_settings=extra, latency='low')
-                        self._stream.start(); di, do, sr = ci, co, sr2; last = None; break
-                    except Exception as e:
-                        last = e; self._stream = None
-                        self.say('Не открылось %s → %s (%s / %s): %s' % (ci['name'], co['name'], ci['api'], co['api'], str(e)[:160]))
+                    for lat in ('low', 'high'):   # «high» — крупнее внутренний буфер звуковой карты: плавнее, чем «low»
+                        try:
+                            self._stream = sd.Stream(device=(ci['id'], co['id']), samplerate=sr2, channels=(1, 1), dtype='float32', blocksize=0, callback=cb, extra_settings=extra, latency=lat)
+                            self._stream.start(); di, do, sr = ci, co, sr2; last = None; break
+                        except Exception as e:
+                            last = e; self._stream = None
+                            self.say('Не открылось %s → %s (%s / %s, %s): %s' % (ci['name'], co['name'], ci['api'], co['api'], lat, str(e)[:120]))
+                    if last is None:
+                        break
                 if last is not None:
                     raise EngineError('Не удалось открыть микрофон или кабель (перепробовал все варианты). Выбери в списках другой микрофон, проверь, что он не занят другой программой, и включи эфир снова. Причина: ' + str(last)[:200])
                 self.io = {'input': di['name'], 'output': do['name']}
@@ -340,34 +357,31 @@ class Engine:
                 self._run = False; self.fail(e); raise
 
     def _work(self):
-        pend = np.zeros(0, dtype=np.float32)
         while self._run:
             p = self.proc; n = p.block
+            with self._incv:
+                if len(self._inbuf) < n:
+                    self._incv.wait(timeout=0.2)
+                if len(self._inbuf) < n:
+                    continue
+                blk, self._inbuf = self._inbuf[:n].copy(), self._inbuf[n:]
+            t = time.perf_counter()
             try:
-                pend = np.concatenate([pend, self._qin.get(timeout=0.2)])
-            except queue.Empty:
-                continue
-            while len(pend) >= n and self._run:
-                blk, pend = pend[:n], pend[n:]
-                t = time.perf_counter()
-                try:
-                    y = self.run_block(blk)
-                except Exception as e:
-                    self.fail(e); y = np.zeros(n, dtype=np.float32); time.sleep(0.2)
-                ms = (time.perf_counter() - t) * 1000
-                s = self.stats; s['blocks'] += 1; s['proc_ms'] = ms if s['blocks'] == 1 else s['proc_ms'] * 0.9 + ms * 0.1
-                try:
-                    self._qout.put_nowait(y)
-                except queue.Full:
-                    s['dropped'] += 1
-            if self._qin.qsize() > 4:   # не успеваем: выбрасываем накопившееся, лучше короткий провал, чем растущая задержка
-                while self._qin.qsize() > 1:
-                    try: self._qin.get_nowait(); self.stats['dropped'] += 1
-                    except queue.Empty: break
+                y = self.run_block(blk)
+            except Exception as e:
+                self.fail(e); y = np.zeros(n, dtype=np.float32); time.sleep(0.2)
+            ms = (time.perf_counter() - t) * 1000
+            s = self.stats; s['blocks'] += 1; s['proc_ms'] = ms if s['blocks'] == 1 else s['proc_ms'] * 0.9 + ms * 0.1
+            try:
+                self._qout.put_nowait(y)
+            except queue.Full:
+                s['dropped'] += 1
 
     def stop(self):
         with self.lock:
             self._run = False
+            with self._incv:
+                self._incv.notify_all()
             if self._stream is not None:
                 try: self._stream.abort(); self._stream.close()
                 except Exception: pass
