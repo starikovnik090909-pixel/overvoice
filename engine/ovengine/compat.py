@@ -45,6 +45,7 @@ def vc_info(eng):
         'serverInputDeviceId': di, 'serverOutputDeviceId': do, 'serverMonitorDeviceId': -1,
         'serverAudioInputDevices': ins, 'serverAudioOutputDevices': outs, 'gpus': [{'id': 0 if eng.dev.type == 'cuda' else -1, 'name': eng.dev_name}],
         'tran': c['pitch'], 'indexRatio': c['index_rate'], 'silentThreshold': 0 if gate <= -68 else 10 ** (gate / 20), 'serverOutputAudioGain': c['gain'],
+        'serverReadChunkSize': int(round(c['block'] * 48000 / 128)), 'crossFadeOverlapSize': c['crossfade'], 'f0Detector': 'rmvpe',   # единицы как в VCClient: кусок = 128 отсчётов при 48 кГц
     })
     return d
 
@@ -61,6 +62,9 @@ def vc_set(eng, key, val, work=lambda text, fn: fn()):
     if key == 'indexRatio': eng.settings(index_rate=f()); return True
     if key == 'silentThreshold': eng.settings(gate_db=-90.0 if f() <= 0 else 20 * math.log10(f())); return True
     if key == 'serverOutputAudioGain': eng.settings(gain=f()); return True
+    if key == 'serverReadChunkSize': eng.settings(block=f() * 128 / 48000); return True
+    if key == 'crossFadeOverlapSize': eng.settings(crossfade=f()); return True
+    if key == 'f0Detector': return True   # в Овервойсе всегда RMVPE
     if key == 'passThrough': eng.settings(passthrough=f() >= 1); return True
     if key in ('serverInputDeviceId', 'serverOutputDeviceId'):
         eng.pick_device_id('input' if key == 'serverInputDeviceId' else 'output', int(f())); return True
@@ -70,4 +74,4 @@ def vc_set(eng, key, val, work=lambda text, fn: fn()):
         else:
             eng.stop()
         return True
-    return key in ('enableServerAudio', 'serverMonitorDeviceId', 'crossFadeOverlapSize')   # понятные, но ничего не меняющие
+    return key in ('enableServerAudio', 'serverMonitorDeviceId')   # понятные, но ничего не меняющие
