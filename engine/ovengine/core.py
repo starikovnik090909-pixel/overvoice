@@ -214,6 +214,21 @@ class Engine:
         hit.sort(key=lambda d: ('WASAPI' not in d['api'], 'MME' in d['api']))
         return hit[0]
 
+    def _cands(self, want, kind):
+        """Все подходящие устройства по порядку надёжности: WASAPI, DirectSound, MME; WDM-KS — в самом конце (часто не открывается)."""
+        devs = [d for d in self.devices() if d[kind] > 0]
+        if want in (None, ''):
+            raise EngineError('Не выбрано устройство ' + ('ввода' if kind == 'in' else 'вывода'))
+        w = str(want).lower()
+        if str(want).isdigit() and int(want) < len(self.devices()):
+            d0 = self.devices()[int(want)]; w = d0['name'].lower()
+        hit = [d for d in devs if w in d['name'].lower() or (len(d['name']) >= 12 and d['name'].lower() in w)]
+        if not hit:
+            raise EngineError('Устройство «%s» не найдено' % want)
+        rank = lambda d: (0 if 'WASAPI' in d['api'] else 1 if 'DirectSound' in d['api'] else 2 if 'MME' in d['api'] else 3)
+        hit.sort(key=rank)
+        return hit
+
     def _save_pref(self):
         try:
             import json; json.dump(self.pref, open(self.state_file, 'w', encoding='utf-8'), ensure_ascii=False)
@@ -273,13 +288,20 @@ class Engine:
                 raise EngineError('Сначала выбери голос')
             self.err = ''
             try:
-                di, do = self._find(inp, 'in'), self._find(out, 'out')
+                cin, cout = self._cands(inp, 'in'), self._cands(out, 'out')
+                same = [(a, b) for a in cin for b in cout if a['api'] == b['api']]
+                combos = (same + [(a, b) for a in cin for b in cout if a['api'] != b['api']])[:8]
+                try:   # запасной вариант: системный микрофон и кабель — на случай, если выбранное устройство стало недоступно
+                    ain, aout = self._cands(self.auto_device('input'), 'in'), self._cands(self.auto_device('output'), 'out')
+                    combos += [(a, b) for a in ain for b in aout if a['api'] == b['api'] and (a['id'], b['id']) not in [(x['id'], y['id']) for x, y in combos]][:3]
+                except Exception:
+                    pass
+                di, do = combos[0]
                 sr = do['sr'] if do['sr'] else 48000
                 self._io_sr = sr; self._build(self.loaded[self.active]); self.warm()
                 p = self.proc; n = p.block
                 self._qin = queue.Queue(maxsize=8); self._qout = queue.Queue(maxsize=8)
                 self._run = True; self.stats = {'proc_ms': 0.0, 'blocks': 0, 'late': 0, 'dropped': 0}
-                extra = sd.WasapiSettings(auto_convert=True) if 'WASAPI' in di['api'] and 'WASAPI' in do['api'] else None
                 outq, inq, st = self._qout, self._qin, self.stats
                 buf_in = np.zeros(0, dtype=np.float32); buf_out = [np.zeros(0, dtype=np.float32)]
 
@@ -298,9 +320,22 @@ class Engine:
                     outdata[:] = got[:need, None]; buf_out[0] = got[need:]
 
                 self._thr = threading.Thread(target=self._work, daemon=True, name='ov-work'); self._thr.start()
-                self._stream = sd.Stream(device=(di['id'], do['id']), samplerate=sr, channels=(1, 1), dtype='float32', blocksize=0, callback=cb, extra_settings=extra, latency='low')
-                self._stream.start(); self.io = {'input': di['name'], 'output': do['name']}
-                self.say('Звук включён: %s → %s (%d Гц)' % (di['name'], do['name'], sr))
+                last = None
+                for ci, co in combos:   # пробуем по очереди: WASAPI, потом DirectSound, MME; WDM-KS последним
+                    sr2 = co['sr'] if co['sr'] else 48000
+                    if sr2 != self._io_sr:
+                        self._io_sr = sr2; self._build(self.loaded[self.active]); self.warm(); p = self.proc; n = p.block
+                    extra = sd.WasapiSettings(auto_convert=True) if 'WASAPI' in ci['api'] and 'WASAPI' in co['api'] else None
+                    try:
+                        self._stream = sd.Stream(device=(ci['id'], co['id']), samplerate=sr2, channels=(1, 1), dtype='float32', blocksize=0, callback=cb, extra_settings=extra, latency='low')
+                        self._stream.start(); di, do, sr = ci, co, sr2; last = None; break
+                    except Exception as e:
+                        last = e; self._stream = None
+                        self.say('Не открылось %s → %s (%s / %s): %s' % (ci['name'], co['name'], ci['api'], co['api'], str(e)[:160]))
+                if last is not None:
+                    raise EngineError('Не удалось открыть микрофон или кабель (перепробовал все варианты). Выбери в списках другой микрофон, проверь, что он не занят другой программой, и включи эфир снова. Причина: ' + str(last)[:200])
+                self.io = {'input': di['name'], 'output': do['name']}
+                self.say('Звук включён: %s [%s] → %s [%s] (%d Гц)' % (di['name'], di['api'], do['name'], do['api'], sr))
             except Exception as e:
                 self._run = False; self.fail(e); raise
 
