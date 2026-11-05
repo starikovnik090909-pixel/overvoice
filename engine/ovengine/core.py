@@ -14,14 +14,16 @@ import torch
 
 from ovengine.hub import load_hubert, load_rmvpe
 from ovengine.stream import Processor
+from ovengine.dsp import Chain
 from ovengine.voice import Voice
 
 log = logging.getLogger('ovengine')
 
 DEFAULTS = {'pitch': 0, 'index_rate': 0.5, 'formant': 0.0, 'gate_db': -48.0, 'gain': 1.0, 'rms_mix': 0.25,
-            'block': 0.4, 'extra': 2.0, 'crossfade': 0.05, 'passthrough': False, 'half': False}
+            'block': 0.4, 'extra': 2.0, 'crossfade': 0.05, 'passthrough': False, 'half': False,
+            'denoise': 0.5, 'comp': 0.4, 'limit_db': -3.0}
 LIMITS = {'pitch': (-24, 24), 'index_rate': (0, 1), 'formant': (-6, 6), 'gate_db': (-90, 0), 'gain': (0, 4), 'rms_mix': (0, 1),
-          'block': (0.08, 1.5), 'extra': (0.0, 5.0), 'crossfade': (0.01, 0.2)}
+          'block': (0.08, 1.5), 'extra': (0.0, 5.0), 'crossfade': (0.01, 0.2), 'denoise': (0, 1), 'comp': (0, 1), 'limit_db': (-12, 0)}
 REBUILD = ('block', 'extra', 'crossfade')   # эти настройки пересоздают буферы
 
 
@@ -183,13 +185,18 @@ class Engine:
         c = self.cfg
         if c['passthrough']:
             return (x * c['gain']).astype(np.float32)
+        sr = self.io_sr(self.loaded[self.active]) if self.active in self.loaded else 44100
+        ch = getattr(self, '_chain', None)
+        if ch is None or ch.sr != sr:
+            ch = self._chain = Chain(sr)
+        x = ch.denoise(x, c['denoise']) if c['denoise'] > 0.01 else x
         rin = float(np.sqrt(np.mean(x ** 2)) + 1e-9)
         y = p.process(x.copy(), key=c['pitch'], index_rate=c['index_rate'], formant=c['formant'], gate_db=c['gate_db'])
         if c['rms_mix'] < 1:   # выровнять громкость по входу, плавно, чтобы не было ступенек
             rout = float(np.sqrt(np.mean(y ** 2)) + 1e-3)
             g = float(np.clip((rin / rout) ** (1.0 - c['rms_mix']), 0.0, 4.0)) if rin > 1e-3 else 0.0
             ramp = np.linspace(self._gain_prev, g, len(y), dtype=np.float32); self._gain_prev = g; y = y * ramp
-        return np.clip(y * c['gain'], -1.0, 1.0).astype(np.float32)
+        return ch.master(y * c['gain'], c['comp'], c['limit_db']).astype(np.float32)
 
     # ---------- звук ----------
     def devices(self):
