@@ -3,6 +3,7 @@ function main(ctx) {
   const { nv, app } = ctx;
   const ok = (res, extra) => res.json(Object.assign({ success: true }, nv.state(), extra || {}));
   app.get('/api/nv/state', async (req, res) => { let voices = nv.cachedVoices(); try { if (nv.state().status.running) voices = await nv.voices(); } catch (e) { /* движок занят */ } ok(res, { voices }); });
+  app.get('/api/nv/log', async (req, res) => { try { res.json({ success: true, text: await nv.fullLog() }); } catch (e) { res.status(500).json({ success: false, error: String(e && e.message || e) }); } });
   app.post('/api/nv/settings', (req, res) => { nv.update(Object.assign({}, nv.getSettings(), req.body || {})); ok(res); });
   app.post('/api/nv/install', (req, res) => { nv.install(!!(req.body || {}).force); setTimeout(() => ok(res), 300); });
   app.post('/api/nv/start', (req, res) => { nv.start().catch(() => {}); setTimeout(() => ok(res), 300); });

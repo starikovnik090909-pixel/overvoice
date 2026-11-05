@@ -527,4 +527,20 @@ async function vcInstall() {
   return state();
 }
 const _setInstaller = (f) => { installer = f; };
-module.exports = { mirrorFetch, downloadRetry, _setInstaller, select, selState, watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
+/** Текст для отправки разработчику: версия, состояние, хвост вывода движка и его собственный журнал. */
+async function fullLog() {
+  const out = []; const t = (l) => out.push(l);
+  let ver = ''; try { ver = require('./package.json').version; } catch (e) { /* нет */ }
+  t('Овервойс ' + ver + ' · ' + process.platform + ' ' + process.arch + ' · Node ' + process.version);
+  const s = state(); t('Состояние: ' + s.status.state + (s.status.text ? ' — ' + s.status.text : '')); t('Движок установлен: ' + (s.installed ? 'да' : 'нет'));
+  try { t('Настройки: ' + JSON.stringify(s.settings).slice(0, 600)); } catch (e) { /* нет */ }
+  t(''); t('--- вывод программы движка (последние строки) ---'); log.slice(-60).forEach((l) => t(l));
+  try {
+    const i = await info();
+    t(''); t('--- журнал движка ---'); t('Версия движка ' + (i.version || '?') + ', устройство: ' + (i.device || '?') + ', голос: ' + (i.active || '—') + (i.error ? ', ОШИБКА: ' + i.error : ''));
+    (i.log || []).forEach((l) => t(l));
+  } catch (e) { t(''); t('Движок не отвечает: ' + (e && e.message || e)); }
+  return out.join('\n');
+}
+
+module.exports = { fullLog, mirrorFetch, downloadRetry, _setInstaller, select, selState, watch, adopt, okName, getActive, setActive, applyActive, applyVoiceSettings, vcInstall, samplePath, saveVoiceSettings, libraryList, libraryPut, libraryState, syncLibrary, voicesDir, drives, cableState, cableInstall, cachedVoices, init, state, update, getSettings, install, start, stop, voices, useVoice, release, proxy, alive, info, setSetting, launchArgs, findExe, download, VARIANTS };
