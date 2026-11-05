@@ -19,7 +19,7 @@ from ovengine.voice import Voice
 log = logging.getLogger('ovengine')
 
 DEFAULTS = {'pitch': 0, 'index_rate': 0.5, 'formant': 0.0, 'gate_db': -48.0, 'gain': 1.0, 'rms_mix': 0.25,
-            'block': 0.25, 'extra': 1.0, 'crossfade': 0.05, 'passthrough': False, 'half': False}
+            'block': 0.4, 'extra': 2.0, 'crossfade': 0.05, 'passthrough': False, 'half': False}
 LIMITS = {'pitch': (-24, 24), 'index_rate': (0, 1), 'formant': (-6, 6), 'gate_db': (-90, 0), 'gain': (0, 4), 'rms_mix': (0, 1),
           'block': (0.08, 1.5), 'extra': (0.0, 5.0), 'crossfade': (0.01, 0.2)}
 REBUILD = ('block', 'extra', 'crossfade')   # эти настройки пересоздают буферы
