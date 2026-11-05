@@ -44,7 +44,7 @@ def vc_info(eng):
         'modelSlots': slots, 'modelSlotIndex': idx, 'serverAudioStated': 1 if eng._run else 0, 'passThrough': 1 if c['passthrough'] else 0,
         'serverInputDeviceId': di, 'serverOutputDeviceId': do, 'serverMonitorDeviceId': -1,
         'serverAudioInputDevices': ins, 'serverAudioOutputDevices': outs, 'gpus': [{'id': 0 if eng.dev.type == 'cuda' else -1, 'name': eng.dev_name}],
-        'tran': c['pitch'], 'indexRatio': c['index_rate'], 'silentThreshold': 0 if gate <= -60 else 10 ** (gate / 20), 'serverOutputAudioGain': c['gain'],
+        'tran': c['pitch'], 'indexRatio': c['index_rate'], 'silentThreshold': 0 if gate <= -68 else 10 ** (gate / 20), 'serverOutputAudioGain': c['gain'],
     })
     return d
 

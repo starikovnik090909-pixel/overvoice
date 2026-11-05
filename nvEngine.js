@@ -306,13 +306,13 @@ const okName = (n) => typeof n === 'string' && SAFE.test(n) && n !== '.' && n !=
 const MODEL_RX = /\.(pth|onnx)$/i, INDEX_RX = /\.index$/i, AUDIO_RX = /\.(mp3|wav|ogg|m4a|flac)$/i;
 const stemOf = (n) => String(n).replace(/\.[^.]+$/, '');
 const normOf = (n) => String(n).toLowerCase().replace(/[\s_\-]+/g, '');
-const DEF_VS = { pitch: 0, idx: 50, gate: 20, vol: 100 };
+const DEF_VS = { pitch: 0, idx: 50, gate: 55, vol: 100 };
 const clampN = (v, a, b, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(a, Math.min(b, Math.round(n))) : d; };
 /** Настройки голоса (высота, сходство, шум, громкость), у каждого голоса свои. */
 function voiceSettings(name) {
   try { const j = JSON.parse(fs.readFileSync(path.join(voicesDir(), name, 'settings.json'), 'utf8')); return cleanVs(j); } catch (e) { return { ...DEF_VS }; }
 }
-const cleanVs = (j) => { const o = j && typeof j === 'object' ? j : {}; return { pitch: clampN(o.pitch, -24, 24, DEF_VS.pitch), idx: clampN(o.idx, 0, 100, DEF_VS.idx), gate: clampN(o.gate, 0, 100, DEF_VS.gate), vol: clampN(o.vol, 0, 200, DEF_VS.vol) }; };
+const cleanVs = (j) => { const o = j && typeof j === 'object' ? j : {}; return { pitch: clampN(o.pitch, -24, 24, DEF_VS.pitch), idx: clampN(o.idx, 0, 100, DEF_VS.idx), gate: (o.g2 || !(Number(o.gate) > 0 && Number(o.gate) <= 20)) ? clampN(o.gate, 0, 100, DEF_VS.gate) : DEF_VS.gate, g2: 1, vol: clampN(o.vol, 0, 200, DEF_VS.vol) }; };
 function saveVoiceSettings(name, body) {
   if (!okName(name) || !fs.existsSync(path.join(voicesDir(), name))) throw new Error('Такого голоса нет');
   const v = cleanVs(Object.assign({}, voiceSettings(name), body || {}));
@@ -393,7 +393,7 @@ function setActive(name) {
   if (name !== '' && (!okName(name) || !fs.existsSync(path.join(voicesDir(), name)))) throw new Error('Такого голоса нет');
   fs.mkdirSync(voicesDir(), { recursive: true }); fs.writeFileSync(activeFile(), JSON.stringify({ name })); return name;
 }
-const gateVal = (g) => (Number(g) === 0 ? 0 : Math.pow(10, -5 + Number(g) / 50));
+const gateVal = (g) => (Number(g) <= 0 ? 0 : Math.pow(10, (-70 + 0.4 * Number(g)) / 20));   // ползунок 0–100 % → −70…−30 дБ (0 — выключено)
 /** Выбрать голос в движке и поставить его сохранённые настройки (высота, сходство, шум, громкость). */
 async function applyVoiceSettings(name) {
   const hit = (await voices()).find((v) => v.name === name), lv = libraryList().find((x) => x.name === name);
@@ -537,6 +537,8 @@ async function fullLog() {
   t(''); t('--- вывод программы движка (последние строки) ---'); log.slice(-60).forEach((l) => t(l));
   try {
     const i = await info();
+    if (i.stats) t('Нагрузка: расчёт блока ' + Math.round(i.stats.proc_ms) + ' мс, блоков ' + i.stats.blocks + ', опозданий ' + i.stats.late + ', пропущено ' + i.stats.dropped + ', задержка ~' + i.latency_ms + ' мс');
+    if (i.settings) t('Настройки движка: ' + JSON.stringify(i.settings));
     t(''); t('--- журнал движка ---'); t('Версия движка ' + (i.version || '?') + ', устройство: ' + (i.device || '?') + ', голос: ' + (i.active || '—') + (i.error ? ', ОШИБКА: ' + i.error : ''));
     (i.log || []).forEach((l) => t(l));
   } catch (e) { t(''); t('Движок не отвечает: ' + (e && e.message || e)); }

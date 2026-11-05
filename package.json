@@ -1,6 +1,6 @@
 {
   "name": "overvoice",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "description": "Overvoice: нейроголос для стрима на основе VCClient (Wataru Okada, MIT). Отдельная программа и дополнение для Overdeck.",
   "main": "server.js",
   "private": true,

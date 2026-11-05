@@ -40,15 +40,19 @@ class Processor:
         """Ожидаемая задержка без учёта времени расчёта: блок + склейка."""
         return (self.block + self.sola_n) / self.sr
 
-    def process(self, x, key=0, index_rate=0.0, formant=0.0, gate_db=-60.0):
+    def process(self, x, key=0, index_rate=0.0, formant=0.0, gate_db=-48.0):
         """x — float32 моно, ровно block отсчётов. Возвращает массив той же длины."""
         n = self.block
         if x.shape[0] != n:
             raise ValueError('ожидался блок %d отсчётов, пришло %d' % (n, x.shape[0]))
-        if gate_db > -60:   # шумовой порог: тихие куски обнуляем
+        if gate_db > -68:   # шумовой порог (дБ от полной шкалы): тихие куски обнуляем; ниже -68 — выключен
             zc = self.zc; seg = x[:len(x) // zc * zc].reshape(-1, zc)
             rms = np.sqrt((seg ** 2).mean(axis=1) + 1e-12); db = 20 * np.log10(rms + 1e-9)
-            for i in np.where(db < gate_db)[0]:
+            loud = db >= gate_db
+            keep = loud.copy()
+            for k in range(1, 6):   # по 50 мс вокруг громкого куска оставляем: не обрезать начало и конец слов
+                keep[k:] |= loud[:-k]; keep[:-k] |= loud[k:]
+            for i in np.where(~keep)[0]:
                 x[i * zc:(i + 1) * zc] = 0
         t = torch.from_numpy(np.ascontiguousarray(x)).to(self.dev)
         self.inp[:-n] = self.inp[n:].clone(); self.inp[-n:] = t
