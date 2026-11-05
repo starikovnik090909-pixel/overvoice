@@ -487,22 +487,10 @@ class RMVPE:
         self.resample_kernel = {}
         if isinstance(is_half, str):
             is_half = is_half.lower() == "true"
+        # Овервойс сам решает, на чём считать и в какой точности (пакета configs из RVC здесь нет — раньше из-за него модель не грузилась на видеокарте)
         if device is None:
-            from configs.config import infer_device, infer_dtype
-
-            device = str(infer_device)
-            is_half = infer_dtype == torch.float16
-        elif str(device).startswith("cuda"):
-            from configs.config import get_device_dtype_sm
-
-            parsed_device = torch.device(device)
-            device_index = parsed_device.index
-            if device_index is None:
-                device_index = torch.cuda.current_device()
-            selected_device, selected_dtype, _, _ = get_device_dtype_sm(device_index)
-            device = str(selected_device)
-            is_half = selected_dtype == torch.float16
-        else:
+            device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        if not str(device).startswith('cuda') and 'privateuseone' not in str(device):
             is_half = False
         self.is_half = is_half
         self.device = device

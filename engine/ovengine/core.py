@@ -69,10 +69,11 @@ class Engine:
             self._shared_locked()
 
     def _shared_locked(self):
-        if self.hub is None:
+        if self.hub is None or self.rm is None:
             half = bool(self.cfg['half']) and self.dev.type == 'cuda'
             self.say('Загружаю общие модели (HuBERT, RMVPE) на ' + self.dev_name)
-            self.hub = load_hubert(self.assets, self.dev, half); self.rm = load_rmvpe(self.assets, self.dev, half)
+            hub = load_hubert(self.assets, self.dev, half); rm = load_rmvpe(self.assets, self.dev, half)
+            self.hub, self.rm = hub, rm   # оба сразу: если вторая модель не загрузилась, первая не считается готовой
 
     def files_of(self, name):
         d = os.path.join(self.voices_dir, name)
